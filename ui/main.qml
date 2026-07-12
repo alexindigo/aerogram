@@ -2,8 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
-import "components"
-import "views"
+import Atmogram
 
 Kirigami.ApplicationWindow {
     id: root
