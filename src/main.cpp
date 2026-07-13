@@ -12,7 +12,7 @@ int main(int argc, char *argv[])
     AccountController controller;
     engine.rootContext()->setContextProperty("accountController", &controller);
 
-    const QUrl url(QStringLiteral("qrc:/Atmogram/ui/main.qml"));
+    const QUrl url(QStringLiteral("qrc:/Aerogram/ui/main.qml"));
     engine.load(url);
 
     return app.exec();

@@ -1,4 +1,4 @@
-# Atmogram
+# Aerogram
 
 A unified email and Delta Chat client built with Qt6 / KDE Kirigami.
 
@@ -7,7 +7,7 @@ A unified email and Delta Chat client built with Qt6 / KDE Kirigami.
 ```bash
 cmake -B build -S .
 cmake --build build
-./build/atmogram
+./build/aerogram
 ```
 
 Dependencies: Qt 6.5+ (Core, Quick, QuickControls2) and KF6 Kirigami.

@@ -7,7 +7,7 @@ MessageListModel::MessageListModel(QObject *parent)
         { "msg-1", "Weekly team standup notes",  "Alice Chen",     QDateTime::currentDateTime().addSecs(-3600),   "Hey team, here are the action items from today's standup...", true },
         { "msg-2", "Your invoice is ready",      "Billing Team",   QDateTime::currentDateTime().addSecs(-7200),   "Please find attached the invoice for last month...",         true },
         { "msg-3", "Re: Project Delta proposal", "Bob Martinez",   QDateTime::currentDateTime().addSecs(-86400),  "I think we should go ahead with the phased rollout...",      false },
-        { "msg-4", "Welcome to Atmogram",        "Atmogram Team",  QDateTime::currentDateTime().addSecs(-172800), "Thanks for signing up! Here's how to get started...",        false },
+        { "msg-4", "Welcome to Aerogram",        "Aerogram Team",  QDateTime::currentDateTime().addSecs(-172800), "Thanks for signing up! Here's how to get started...",        false },
     };
 }
 

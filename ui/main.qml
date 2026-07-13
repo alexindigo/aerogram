@@ -2,13 +2,13 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
-import Atmogram
+import Aerogram
 
 Kirigami.ApplicationWindow {
     id: root
     width: 1024
     height: 768
-    title: "Atmogram"
+    title: "Aerogram"
 
     property string activeView: "email"
     readonly property var viewMap: { "email": 0, "chats": 1, "settings": 2 }
