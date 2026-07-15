@@ -2,18 +2,8 @@
 #define MESSAGELISTMODEL_H
 
 #include <QAbstractListModel>
-#include <QDateTime>
-#include <QString>
 #include <QVector>
-
-struct Message {
-    QString messageId;
-    QString subject;
-    QString sender;
-    QDateTime date;
-    QString snippet;
-    bool isUnread;
-};
+#include "core/Types.h"
 
 class MessageListModel : public QAbstractListModel
 {
@@ -36,6 +26,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     QString messageIdAtRow(int row) const;
+
+    void setMessages(const QVector<Message> &messages);
 
 private:
     QVector<Message> m_messages;

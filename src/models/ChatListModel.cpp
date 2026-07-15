@@ -3,12 +3,6 @@
 ChatListModel::ChatListModel(QObject *parent)
     : QAbstractListModel(parent)
 {
-    m_messages = {
-        { "chat-1", "Diana",   "Did you see the new Kirigami components?", QDateTime::currentDateTime().addSecs(-1800),  false },
-        { "chat-2", "Group",   "Meeting at 3pm tomorrow",                  QDateTime::currentDateTime().addSecs(-3600),  true  },
-        { "chat-3", "Eve",     "Lets grab lunch?",                         QDateTime::currentDateTime().addSecs(-14400), false },
-        { "chat-4", "Group",   "PR is ready for review",                   QDateTime::currentDateTime().addSecs(-43200), true  },
-    };
 }
 
 int ChatListModel::rowCount(const QModelIndex &parent) const
@@ -33,13 +27,6 @@ QVariant ChatListModel::data(const QModelIndex &index, int role) const
     }
 }
 
-QString ChatListModel::chatIdAtRow(int row) const
-{
-    if (row < 0 || row >= m_messages.size())
-        return {};
-    return m_messages.at(row).chatId;
-}
-
 QHash<int, QByteArray> ChatListModel::roleNames() const
 {
     return {
@@ -49,4 +36,18 @@ QHash<int, QByteArray> ChatListModel::roleNames() const
         { TimestampRole,   "timestamp" },
         { IsGroupRole,     "isGroup" },
     };
+}
+
+QString ChatListModel::chatIdAtRow(int row) const
+{
+    if (row < 0 || row >= m_messages.size())
+        return {};
+    return m_messages.at(row).chatId;
+}
+
+void ChatListModel::setChatMessages(const QVector<ChatMessage> &messages)
+{
+    beginResetModel();
+    m_messages = messages;
+    endResetModel();
 }

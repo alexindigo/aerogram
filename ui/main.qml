@@ -34,11 +34,10 @@ Kirigami.ApplicationWindow {
 
             EmailInboxView {
                 onMessageDetailsRequested: (messageId) => {
-                    accountController.fetchMessageDetails(messageId)
+                    accountController.fetchMessages(messageId)
                 }
                 onChatThreadRequested: (emailAddress) => {
-                    accountController.openProtonChat(emailAddress)
-                    root.activeView = "chats"
+                    console.log("chat thread requested for", emailAddress)
                 }
                 onAccountSyncRequested: {
                     accountController.triggerSync()
@@ -47,13 +46,13 @@ Kirigami.ApplicationWindow {
 
             ChatView {
                 onChatSelected: (chatId) => {
-                    accountController.fetchMessageDetails(chatId)
+                    accountController.fetchMessages(chatId)
                 }
                 onComposeMessageRequested: {
-                    // placeholder
+                    accountController.sendMessage(accountController.chatListModel.chatIdAtRow(0), "hello")
                 }
                 onGroupInfoRequested: (chatId) => {
-                    // placeholder
+                    console.log("group info requested for", chatId)
                 }
             }
         }

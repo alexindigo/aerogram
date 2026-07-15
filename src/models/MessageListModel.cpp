@@ -3,12 +3,6 @@
 MessageListModel::MessageListModel(QObject *parent)
     : QAbstractListModel(parent)
 {
-    m_messages = {
-        { "msg-1", "Weekly team standup notes",  "Alice Chen",     QDateTime::currentDateTime().addSecs(-3600),   "Hey team, here are the action items from today's standup...", true },
-        { "msg-2", "Your invoice is ready",      "Billing Team",   QDateTime::currentDateTime().addSecs(-7200),   "Please find attached the invoice for last month...",         true },
-        { "msg-3", "Re: Project Delta proposal", "Bob Martinez",   QDateTime::currentDateTime().addSecs(-86400),  "I think we should go ahead with the phased rollout...",      false },
-        { "msg-4", "Welcome to Aerogram",        "Aerogram Team",  QDateTime::currentDateTime().addSecs(-172800), "Thanks for signing up! Here's how to get started...",        false },
-    };
 }
 
 int MessageListModel::rowCount(const QModelIndex &parent) const
@@ -34,13 +28,6 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
     }
 }
 
-QString MessageListModel::messageIdAtRow(int row) const
-{
-    if (row < 0 || row >= m_messages.size())
-        return {};
-    return m_messages.at(row).messageId;
-}
-
 QHash<int, QByteArray> MessageListModel::roleNames() const
 {
     return {
@@ -51,4 +38,18 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         { SnippetRole,   "snippet" },
         { IsUnreadRole,  "isUnread" },
     };
+}
+
+QString MessageListModel::messageIdAtRow(int row) const
+{
+    if (row < 0 || row >= m_messages.size())
+        return {};
+    return m_messages.at(row).messageId;
+}
+
+void MessageListModel::setMessages(const QVector<Message> &messages)
+{
+    beginResetModel();
+    m_messages = messages;
+    endResetModel();
 }

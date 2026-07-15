@@ -1,4 +1,5 @@
 build/
+accounts/
 
 CMakeLists.txt.user
 CMakeCache.txt

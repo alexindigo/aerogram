@@ -2,17 +2,8 @@
 #define CHATLISTMODEL_H
 
 #include <QAbstractListModel>
-#include <QDateTime>
-#include <QString>
 #include <QVector>
-
-struct ChatMessage {
-    QString chatId;
-    QString senderName;
-    QString messageText;
-    QDateTime timestamp;
-    bool isGroup;
-};
+#include "core/Types.h"
 
 class ChatListModel : public QAbstractListModel
 {
@@ -34,6 +25,8 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     QString chatIdAtRow(int row) const;
+
+    void setChatMessages(const QVector<ChatMessage> &messages);
 
 private:
     QVector<ChatMessage> m_messages;

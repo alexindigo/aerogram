@@ -16,6 +16,8 @@ qt_add_executable(aerogram
     src/models/MessageListModel.cpp
     src/models/ChatListModel.h
     src/models/ChatListModel.cpp
+    src/core/plugin/BackendPlugin.h
+    src/core/plugin/MockBackend.h
 )
 
 qt_add_qml_module(aerogram
@@ -36,7 +38,3 @@ target_link_libraries(aerogram PRIVATE
     Qt6::QuickControls2
     KF6::Kirigami
 )
-
-# Future third-party library placeholders:
-#   target_link_libraries(aerogram PRIVATE proton_core)   # Go-CArchive static lib
-#   target_link_libraries(aerogram PRIVATE deltachat_core) # Rust-FFI static lib
