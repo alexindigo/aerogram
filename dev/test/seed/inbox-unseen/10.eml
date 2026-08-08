@@ -1,0 +1,9 @@
+From: Jack Rue <jack@example.com>
+To: test@localhost
+Subject: No Message-ID header
+Date: Thu, 06 Aug 2026 09:00:00 +0200
+Content-Type: text/plain; charset=utf-8
+
+This message has no Message-ID header. The backend falls back to a
+folder:uid key so it still dedups across syncs.
+

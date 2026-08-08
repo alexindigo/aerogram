@@ -12,6 +12,7 @@ Rectangle {
     signal chatsRequested()
     signal settingsRequested()
     signal resetApplicationRequested()
+    signal addAccountRequested()
 
     property string currentSection: "email"
 
@@ -19,6 +20,12 @@ Rectangle {
         anchors.fill: parent
         anchors.topMargin: 20
         spacing: 15
+
+        Button {
+            text: "+"
+            flat: true
+            onClicked: sidebar.addAccountRequested()
+        }
 
         Button {
             text: "\u2709"

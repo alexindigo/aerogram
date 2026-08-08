@@ -1,0 +1,10 @@
+From: Marta Ruiz <marta@example.com>
+To: test@localhost
+Subject: Dev: sprint planning notes
+Date: Fri, 07 Aug 2026 01:00:00 +0200
+Message-ID: <dev-001@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Body for Dev: sprint planning notes. Lives in the Dev folder to demonstrate multi-folder
+conversation listing.
+

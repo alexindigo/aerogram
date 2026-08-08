@@ -1,0 +1,10 @@
+From: ci-bot@example.com
+To: test@localhost
+Subject: Dev: CI green again
+Date: Fri, 07 Aug 2026 02:00:00 +0200
+Message-ID: <dev-002@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Body for Dev: CI green again. Lives in the Dev folder to demonstrate multi-folder
+conversation listing.
+

@@ -10,8 +10,7 @@ Kirigami.ApplicationWindow {
     height: 768
     title: "Aerogram"
 
-    property string activeView: "email"
-    readonly property var viewMap: { "email": 0, "chats": 1, "settings": 2 }
+    readonly property var viewMap: ({ "email": 0, "chats": 1, "settings": 2 })
 
     RowLayout {
         anchors.fill: parent
@@ -19,42 +18,47 @@ Kirigami.ApplicationWindow {
 
         Sidebar {
             Layout.fillHeight: true
-            currentSection: root.activeView
+            currentSection: accountController.activeView
 
-            onInboxRequested: root.activeView = "email"
-            onChatsRequested: root.activeView = "chats"
-            onSettingsRequested: root.activeView = "settings"
+            onInboxRequested: accountController.setActiveView("email")
+            onChatsRequested: accountController.setActiveView("chats")
+            onSettingsRequested: accountController.setActiveView("settings")
             onResetApplicationRequested: accountController.resetApp()
+            onAddAccountRequested: addAccountDialog.open()
         }
 
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: root.viewMap[root.activeView] ?? 0
+            currentIndex: root.viewMap[accountController.activeView] ?? 0
 
             EmailInboxView {
-                onMessageDetailsRequested: (messageId) => {
-                    accountController.fetchMessages(messageId)
-                }
-                onChatThreadRequested: (emailAddress) => {
-                    console.log("chat thread requested for", emailAddress)
-                }
-                onAccountSyncRequested: {
-                    accountController.triggerSync()
+                onMessageSelected: (messageId) => {
+                    accountController.selectMessage(messageId)
                 }
             }
 
             ChatView {
-                onChatSelected: (chatId) => {
-                    accountController.fetchMessages(chatId)
-                }
-                onComposeMessageRequested: {
-                    accountController.sendMessage(accountController.chatListModel.chatIdAtRow(0), "hello")
-                }
-                onGroupInfoRequested: (chatId) => {
-                    console.log("group info requested for", chatId)
+                onChatSelected: (conversationId) => {
+                    accountController.fetchMessages(conversationId)
                 }
             }
+
+            SettingsView {
+                onSetupFromQrRequested: (qrContent) => {
+                    accountController.setupFromQr(qrContent)
+                }
+                onGetBackupFromQrRequested: (qrText) => {
+                    accountController.getBackupFromQr(qrText)
+                }
+            }
+        }
+    }
+
+    AddAccountDialog {
+        id: addAccountDialog
+        onAccountSubmitted: (credentials) => {
+            accountController.addAccount(credentials)
         }
     }
 }

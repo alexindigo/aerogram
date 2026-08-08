@@ -1,0 +1,9 @@
+From: Eve Torres <eve@example.com>
+To: test@localhost
+Subject: HTML-only fallback
+Date: Tue, 04 Aug 2026 09:30:00 +0200
+Message-ID: <htmlonly-005@example.com>
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>Newsletter</h1><p>This message only has an HTML part;
+the parser strips tags so you can still read it.</p></body></html>

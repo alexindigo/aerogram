@@ -1,0 +1,9 @@
+From: Nora Lind <nora@example.com>
+To: test2@localhost
+Subject: Second account, first message
+Date: Fri, 07 Aug 2026 13:00:00 +0200
+Message-ID: <test2-inbox-001@example.com>
+Content-Type: text/plain; charset=utf-8
+
+This message lives in the test2 account. In a multi-account run it
+must land in a separate on-disk store from the test account.

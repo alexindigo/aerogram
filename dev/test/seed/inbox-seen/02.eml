@@ -1,0 +1,11 @@
+From: Bob Martinez <bob@example.com>
+To: test@localhost
+Subject: Base64 transport check
+Date: Mon, 03 Aug 2026 10:20:00 +0200
+Message-ID: <b64-002@example.com>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+VGhpcyBtZXNzYWdlIHdhcyB0cmFuc3BvcnRlZCBhcyBiYXNlNjQuCgpJZiB5b3Ug
+Y2FuIHJlYWQgdGhpcyBpbiB0aGUgVUksIHRoZSBkZWNvZGVyIHdvcmtzLgoKLSBC
+b2IK

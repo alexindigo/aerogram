@@ -1,0 +1,9 @@
+From: Ingrid Falk <ingrid@example.com>
+To: test@localhost
+Subject: Old archive entry
+Date: Sun, 15 Mar 2020 12:00:00 +0100
+Message-ID: <old-009@example.com>
+Content-Type: text/plain; charset=utf-8
+
+This message is from 2020 and should sort to the bottom of the list.
+

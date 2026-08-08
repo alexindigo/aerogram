@@ -1,0 +1,15 @@
+From: Carol Danvers <carol@example.com>
+To: test@localhost
+Subject: Quoted-printable transport check
+Date: Mon, 03 Aug 2026 11:05:00 +0200
+Message-ID: <qp-003@example.com>
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+This message uses quoted-printable encoding.
+Here is an equals sign encoded: =3D and an accented char: caf=C3=A9.
+
+Long line that gets soft-wrapped by the encoder to demonstrate the soft=
+-break handling in the decoder.
+
+- Carol

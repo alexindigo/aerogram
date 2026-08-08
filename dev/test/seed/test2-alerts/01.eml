@@ -1,0 +1,8 @@
+From: alerts@example.com
+To: test2@localhost
+Subject: [Alert] Disk usage above 80%
+Date: Fri, 07 Aug 2026 15:00:00 +0200
+Message-ID: <alert-001@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Node proxmox-1 disk usage is at 83%.

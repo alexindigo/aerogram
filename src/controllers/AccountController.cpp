@@ -1,19 +1,26 @@
 #include "controllers/AccountController.h"
 
-#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QStandardPaths>
 
-AccountController::AccountController(BackendPlugin *plugin, QObject *parent)
+#include "core/plugin/Capabilities.h"
+#include "core/imap/ImapBackend.h"
+
+AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
+                                     QObject *parent)
     : QObject(parent)
-    , m_plugin(plugin)
+    , m_backends(backends)
     , m_messageModel(new MessageListModel(this))
-    , m_chatModel(new ChatListModel(this))
+    , m_conversationModel(new ConversationListModel(this))
+    , m_configStatus(QStringLiteral("Not configured"))
+    , m_activeView(QStringLiteral("settings"))
 {
-    connect(m_plugin, &BackendPlugin::chatListReady, this, &AccountController::onChatListReady);
-    connect(m_plugin, &BackendPlugin::messagesReady, this, &AccountController::onMessagesReady);
-    connect(m_plugin, &BackendPlugin::messageSent, this, &AccountController::onMessageSent);
-    connect(m_plugin, &BackendPlugin::errorOccurred, this, [](const QString &err) {
-        qWarning() << "Backend error:" << err;
-    });
+    for (const auto &pair : m_backends)
+        connectBackend(pair.first, pair.second);
 }
 
 MessageListModel *AccountController::messageListModel() const
@@ -21,58 +28,457 @@ MessageListModel *AccountController::messageListModel() const
     return m_messageModel;
 }
 
-ChatListModel *AccountController::chatListModel() const
+ConversationListModel *AccountController::conversationListModel() const
 {
-    return m_chatModel;
+    return m_conversationModel;
 }
 
-void AccountController::fetchChatList()
+QString AccountController::configStatus() const
 {
-    m_plugin->fetchChatList();
+    return m_configStatus;
 }
 
-void AccountController::fetchMessages(const QString &chatId)
+QString AccountController::activeView() const
 {
-    m_plugin->fetchMessages(chatId);
+    return m_activeView;
 }
 
-void AccountController::sendMessage(const QString &chatId, const QString &text)
+QString AccountController::activeAccountId() const
 {
-    m_plugin->sendMessage(chatId, text);
+    return m_activeAccountId;
 }
 
-void AccountController::configureAccount(const QString &email, const QString &password)
+QString AccountController::activeConversationId() const
 {
-    m_plugin->configureAccount(email, password);
+    return m_activeConversationId;
+}
+
+QString AccountController::activeMessageId() const
+{
+    return m_activeMessageId;
+}
+
+QVariantMap AccountController::activeMessage() const
+{
+    return m_activeMessage;
+}
+
+QString AccountController::activeMessageBody() const
+{
+    return m_activeMessageBody;
+}
+
+QVariantList AccountController::activeMessageAttachments() const
+{
+    return m_activeMessageAttachments;
+}
+
+// ---------------------------------------------------------------------
+// Property setters
+// ---------------------------------------------------------------------
+
+void AccountController::setConfigStatus(const QString &status)
+{
+    if (m_configStatus != status) {
+        m_configStatus = status;
+        emit configStatusChanged();
+    }
+}
+
+void AccountController::setActiveView(const QString &view)
+{
+    if (m_activeView != view) {
+        m_activeView = view;
+        emit activeViewChanged();
+    }
+}
+
+void AccountController::setActiveAccountId(const QString &accountId)
+{
+    if (m_activeAccountId != accountId) {
+        m_activeAccountId = accountId;
+        emit activeAccountIdChanged();
+    }
+}
+
+void AccountController::setActiveConversationId(const QString &conversationId)
+{
+    if (m_activeConversationId != conversationId) {
+        m_activeConversationId = conversationId;
+        emit activeConversationIdChanged();
+    }
+}
+
+void AccountController::setActiveMessageId(const QString &messageId)
+{
+    if (m_activeMessageId != messageId) {
+        m_activeMessageId = messageId;
+        emit activeMessageIdChanged();
+    }
+}
+
+void AccountController::setActiveMessage(const QVariantMap &message)
+{
+    m_activeMessage = message;
+    emit activeMessageChanged();
+}
+
+void AccountController::setActiveMessageBody(const QString &body)
+{
+    if (m_activeMessageBody != body) {
+        m_activeMessageBody = body;
+        emit activeMessageBodyChanged();
+    }
+}
+
+void AccountController::setActiveMessageAttachments(const QVariantList &attachments)
+{
+    m_activeMessageAttachments = attachments;
+    emit activeMessageAttachmentsChanged();
+}
+
+// ---------------------------------------------------------------------
+// Backend wiring. Per-backend lambdas capture the accountId so incoming
+// local IDs get compounded ("<accountId>/<localId>") on the way in.
+// ---------------------------------------------------------------------
+
+void AccountController::connectBackend(const QString &accountId, BackendPlugin *backend)
+{
+    connect(backend, &BackendPlugin::conversationsReady, this,
+            [this, accountId](const QVector<Conversation> &convs) {
+                QVector<Conversation> compounded;
+                compounded.reserve(convs.size());
+                for (Conversation c : convs) {
+                    c.id = accountId + QStringLiteral("/") + c.id;
+                    compounded.append(c);
+                }
+                m_conversationsByAccount[accountId] = compounded;
+                rebuildMergedConversations();
+            });
+
+    connect(backend, &BackendPlugin::messagesReady, this,
+            [this, accountId](const QString &localConvId, const QVector<Message> &msgs) {
+                const QString compound = accountId + QStringLiteral("/") + localConvId;
+                if (compound != m_activeConversationId)
+                    return;
+                QVector<Message> fixed = msgs;
+                for (Message &m : fixed)
+                    m.conversationId = compound;
+                m_activeMessages = fixed;
+                m_messageModel->setMessages(fixed);
+                emit messagesChanged(compound);
+            });
+
+    connect(backend, &BackendPlugin::messageSent, this,
+            [this, accountId](bool ok, const QString &localConvId) {
+                emit messageSent(ok, accountId + QStringLiteral("/") + localConvId);
+            });
+
+    connect(backend, &BackendPlugin::messageBodyReady, this,
+            [this, accountId](const QString &localConvId, const QString &messageId,
+                              const QString &body) {
+                if (messageId == m_activeMessageId)
+                    setActiveMessageBody(body);
+                emit messageBodyReady(accountId + QStringLiteral("/") + localConvId,
+                                      messageId, body);
+            });
+
+    connect(backend, &BackendPlugin::attachmentSaved, this,
+            [this](bool ok, const QString &messageId, const QString &path) {
+                emit attachmentSaved(ok, messageId, path);
+            });
+
+    connect(backend, &BackendPlugin::configured, this,
+            [this](bool success) {
+                if (success) {
+                    setConfigStatus(QStringLiteral("Connected"));
+                    fetchConversations();
+                } else {
+                    setConfigStatus(QStringLiteral("Setup failed"));
+                }
+            });
+
+    connect(backend, &BackendPlugin::errorOccurred, this,
+            [this, accountId](const QString &error) {
+                setConfigStatus(QStringLiteral("Error: ") + error);
+                emit errorOccurred(accountId + QStringLiteral(": ") + error);
+            });
+
+    connect(backend, &BackendPlugin::ioStarted, this,
+            [this, accountId](bool ok, const QString &error) {
+                emit ioStarted(accountId, ok, error);
+                if (!ok)
+                    setConfigStatus(QStringLiteral("IO start failed: ") + error);
+            });
+
+    connect(backend, &BackendPlugin::ioStopped, this,
+            [this, accountId]() {
+                emit ioStopped(accountId);
+            });
+}
+
+/// \brief Resolve a compound conversationId to its backend, optionally
+///        returning the backend-local ID. Split at the FIRST '/':
+///        accountIds never contain '/', folder names may.
+BackendPlugin *AccountController::backendFor(const QString &compoundConversationId,
+                                             QString *localId) const
+{
+    const int slash = compoundConversationId.indexOf(QLatin1Char('/'));
+    if (slash < 0)
+        return nullptr;
+    const QString accountId = compoundConversationId.left(slash);
+    if (localId)
+        *localId = compoundConversationId.mid(slash + 1);
+    for (const auto &pair : m_backends) {
+        if (pair.first == accountId)
+            return pair.second;
+    }
+    return nullptr;
+}
+
+void AccountController::rebuildMergedConversations()
+{
+    QVector<Conversation> merged;
+    for (const auto &convs : m_conversationsByAccount)
+        merged += convs;
+    m_conversationModel->setConversations(merged);
+    emit conversationsChanged();
+
+    // One-time default selection: prefer a conversation named INBOX,
+    // else the first. Keeps the email view populated without clicks.
+    if (!m_autoSelected && m_activeConversationId.isEmpty() && !merged.isEmpty()) {
+        m_autoSelected = true;
+        QString pick = merged.first().id;
+        for (const Conversation &c : merged) {
+            if (c.name.compare(QStringLiteral("INBOX"), Qt::CaseInsensitive) == 0) {
+                pick = c.id;
+                break;
+            }
+        }
+        fetchMessages(pick);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Slots
+// ---------------------------------------------------------------------
+
+void AccountController::fetchConversations()
+{
+    for (const auto &pair : m_backends) {
+        if (auto *p = dynamic_cast<IConversationProvider *>(pair.second))
+            p->fetchConversations();
+    }
+}
+
+void AccountController::fetchMessages(const QString &conversationId)
+{
+    setActiveConversationId(conversationId);
+    QString localId;
+    BackendPlugin *backend = backendFor(conversationId, &localId);
+    if (auto *p = dynamic_cast<IMessageProvider *>(backend)) {
+        p->fetchMessages(localId);
+    } else {
+        emit errorOccurred(QStringLiteral("No message provider for %1").arg(conversationId));
+    }
+}
+
+void AccountController::fetchMessageBody(const QString &conversationId, const QString &messageId)
+{
+    QString localId;
+    BackendPlugin *backend = backendFor(conversationId, &localId);
+    if (auto *p = dynamic_cast<IMessageProvider *>(backend)) {
+        p->fetchMessageBody(localId, messageId);
+    } else {
+        emit errorOccurred(QStringLiteral("No message provider for %1").arg(conversationId));
+    }
+}
+
+void AccountController::selectMessage(const QString &messageId)
+{
+    setActiveMessageId(messageId);
+    setActiveMessageBody(QString());
+
+    QVariantMap meta;
+    QVariantList atts;
+    for (const Message &m : m_activeMessages) {
+        if (m.messageId != messageId)
+            continue;
+        meta[QStringLiteral("subject")] = m.subject;
+        meta[QStringLiteral("sender")] = m.sender;
+        meta[QStringLiteral("date")] = m.date;
+        for (const AttachmentMeta &a : m.attachments) {
+            QVariantMap am;
+            am[QStringLiteral("index")] = a.index;
+            am[QStringLiteral("filename")] = a.filename;
+            am[QStringLiteral("mimeType")] = a.mimeType;
+            am[QStringLiteral("size")] = a.size;
+            atts.append(am);
+        }
+        break;
+    }
+    setActiveMessage(meta);
+    setActiveMessageAttachments(atts);
+
+    if (!m_activeConversationId.isEmpty())
+        fetchMessageBody(m_activeConversationId, messageId);
+}
+
+void AccountController::saveAttachment(const QString &messageId, int partIndex,
+                                       const QString &destinationPath)
+{
+    BackendPlugin *backend = backendFor(m_activeConversationId, nullptr);
+    if (auto *p = dynamic_cast<IMessageProvider *>(backend)) {
+        p->saveAttachment(messageId, partIndex, destinationPath);
+    } else {
+        emit attachmentSaved(false, messageId, destinationPath);
+    }
+}
+
+void AccountController::sendMessage(const QString &conversationId, const QString &text)
+{
+    QString localId;
+    BackendPlugin *backend = backendFor(conversationId, &localId);
+    if (auto *p = dynamic_cast<IMessageSender *>(backend)) {
+        p->sendMessage(localId, text);
+    } else {
+        emit errorOccurred(QStringLiteral("Backend for %1 cannot send messages")
+                               .arg(conversationId));
+    }
+}
+
+void AccountController::setupFromQr(const QString &qrContent)
+{
+    setConfigStatus(QStringLiteral("Setting up account from QR..."));
+    for (const auto &pair : m_backends) {
+        if (auto *p = dynamic_cast<IQrSetup *>(pair.second)) {
+            p->setupFromQr(qrContent);
+            return;
+        }
+    }
+    emit errorOccurred(QStringLiteral("No backend supports QR setup"));
+}
+
+void AccountController::getBackupFromQr(const QString &qrText)
+{
+    setConfigStatus(QStringLiteral("Receiving backup from first device..."));
+    for (const auto &pair : m_backends) {
+        if (auto *p = dynamic_cast<IQrSetup *>(pair.second)) {
+            p->getBackupFromQr(qrText);
+            return;
+        }
+    }
+    emit errorOccurred(QStringLiteral("No backend supports QR backup"));
+}
+
+void AccountController::configureAccount(const QVariantMap &credentials)
+{
+    setConfigStatus(QStringLiteral("Configuring account..."));
+    for (const auto &pair : m_backends) {
+        if (auto *p = dynamic_cast<ICredentialsSetup *>(pair.second)) {
+            p->configure(credentials);
+            return;
+        }
+    }
+    emit errorOccurred(QStringLiteral("No backend supports credentials setup"));
+}
+
+/// \brief Add a new account at runtime (from the add-account dialog or
+///        IPC). Constructs, configures, registers, and starts the
+///        backend, then persists credentials to
+///        <AppConfigLocation>/accounts.json (0600) so the account
+///        survives relaunch without CLI flags.
+void AccountController::addAccount(const QVariantMap &credentials)
+{
+    const QString type = credentials.value(QStringLiteral("type"),
+                                           QStringLiteral("imap")).toString();
+    if (type != QLatin1String("imap")) {
+        emit errorOccurred(QStringLiteral("Unsupported account type: ") + type);
+        return;
+    }
+
+    const QString accountId = QStringLiteral("imap:")
+                            + credentials.value(QStringLiteral("user")).toString()
+                            + QStringLiteral("@")
+                            + credentials.value(QStringLiteral("host")).toString();
+
+    for (const auto &pair : m_backends) {
+        if (pair.first == accountId) {
+            setConfigStatus(QStringLiteral("Account already added: ") + accountId);
+            return;
+        }
+    }
+
+    // Prototype note: the controller constructing a concrete backend is
+    // a deliberate shortcut — a factory plugin registry is the eventual
+    // home for this (see docs/CLEANUP.md).
+    auto *backend = new ImapBackend(this);
+    backend->initialize({});
+    backend->configure(credentials);
+
+    m_backends.append({accountId, backend});
+    connectBackend(accountId, backend);
+    persistAccount(credentials);
+    backend->startIo();
+
+    setConfigStatus(QStringLiteral("Account added: ") + accountId);
+}
+
+void AccountController::persistAccount(const QVariantMap &credentials)
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/accounts.json");
+
+    QJsonArray arr;
+    QFile in(path);
+    if (in.open(QIODevice::ReadOnly)) {
+        arr = QJsonDocument::fromJson(in.readAll()).array();
+        in.close();
+    }
+
+    QVariantMap toStore = credentials;
+    toStore.insert(QStringLiteral("type"), QStringLiteral("imap"));
+    arr.append(QJsonObject::fromVariantMap(toStore));
+
+    QFile out(path);
+    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        out.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+        out.close();
+        // Credentials on disk: owner-only.
+        QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
 }
 
 void AccountController::triggerSync()
 {
-    m_plugin->fetchChatList();
+    fetchConversations();
 }
 
 void AccountController::resetApp()
 {
-    m_plugin->shutdown();
+    // NOTE: IMAP backends lose their configured credentials here;
+    // restart is required for them. DeltaChat re-initializes fine.
+    for (const auto &pair : m_backends) {
+        pair.second->shutdown();
+        pair.second->initialize({});
+    }
     m_messageModel->setMessages({});
-    m_chatModel->setChatMessages({});
-    m_plugin->initialize();
-    m_plugin->fetchChatList();
+    m_conversationModel->setConversations({});
+    m_conversationsByAccount.clear();
+    m_activeMessages.clear();
+    m_autoSelected = false;
+    setConfigStatus(QStringLiteral("Not configured"));
+    setActiveAccountId(QString());
+    setActiveConversationId(QString());
+    setActiveMessageId(QString());
+    setActiveMessage({});
+    setActiveMessageBody(QString());
+    setActiveMessageAttachments({});
+    fetchConversations();
 }
 
-void AccountController::onChatListReady(const QVector<ChatMessage> &chats)
+void AccountController::selectAccount(const QString &accountId)
 {
-    m_chatModel->setChatMessages(chats);
-}
-
-void AccountController::onMessagesReady(const QString &chatId, const QVector<Message> &messages)
-{
-    Q_UNUSED(chatId);
-    m_messageModel->setMessages(messages);
-}
-
-void AccountController::onMessageSent(bool ok, const QString &chatId)
-{
-    Q_UNUSED(ok);
-    Q_UNUSED(chatId);
+    setActiveAccountId(accountId);
 }

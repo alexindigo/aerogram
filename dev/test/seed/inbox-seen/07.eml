@@ -1,0 +1,10 @@
+From: =?UTF-8?B?R3LDqXRhIE7DqXdlcg==?= <greta@example.com>
+To: test@localhost
+Subject: Sender name decoding
+Date: Wed, 05 Aug 2026 07:55:00 +0200
+Message-ID: <encsender-007@example.com>
+Content-Type: text/plain; charset=utf-8
+
+This sender's display name was base64-encoded ("Greta Niever").
+Check the list view shows the decoded name.
+

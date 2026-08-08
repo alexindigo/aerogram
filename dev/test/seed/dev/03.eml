@@ -1,0 +1,10 @@
+From: Nina Roth <nina@example.com>
+To: test@localhost
+Subject: Dev: architecture diagram review
+Date: Fri, 07 Aug 2026 03:00:00 +0200
+Message-ID: <dev-003@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Body for Dev: architecture diagram review. Lives in the Dev folder to demonstrate multi-folder
+conversation listing.
+

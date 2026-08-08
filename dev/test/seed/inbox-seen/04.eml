@@ -1,0 +1,18 @@
+From: Dave Kang <dave@example.com>
+To: test@localhost
+Subject: Multipart alternative check
+Date: Tue, 04 Aug 2026 08:40:00 +0200
+Message-ID: <multipart-004@example.com>
+Content-Type: multipart/alternative; boundary="boundary42"
+
+--boundary42
+Content-Type: text/plain; charset=utf-8
+
+This is the plain-text part. The UI should show this text.
+
+--boundary42
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>This is the <b>HTML</b> part. The UI should NOT show this.</p></body></html>
+
+--boundary42--

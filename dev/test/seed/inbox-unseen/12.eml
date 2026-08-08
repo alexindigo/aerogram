@@ -1,0 +1,9 @@
+From: Leo Vidal <leo@example.com>
+To: test@localhost
+Subject: =?UTF-8?Q?Deploy_=E2=9C=93_done?=
+Date: Thu, 06 Aug 2026 11:45:00 +0200
+Message-ID: <deploy-012@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Subject contains a checkmark via encoded word.
+

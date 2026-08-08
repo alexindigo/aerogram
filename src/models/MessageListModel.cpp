@@ -24,6 +24,7 @@ QVariant MessageListModel::data(const QModelIndex &index, int role) const
     case DateRole:      return msg.date;
     case SnippetRole:   return msg.snippet;
     case IsUnreadRole:  return msg.isUnread;
+    case HasAttachmentsRole: return !msg.attachments.isEmpty();
     default:            return {};
     }
 }
@@ -37,6 +38,7 @@ QHash<int, QByteArray> MessageListModel::roleNames() const
         { DateRole,      "date" },
         { SnippetRole,   "snippet" },
         { IsUnreadRole,  "isUnread" },
+        { HasAttachmentsRole, "hasAttachments" },
     };
 }
 

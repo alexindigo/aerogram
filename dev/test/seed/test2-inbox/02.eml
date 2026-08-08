@@ -1,0 +1,20 @@
+From: Omar Reyes <omar@example.com>
+To: test2@localhost
+Subject: Meeting notes attached
+Date: Fri, 07 Aug 2026 14:30:00 +0200
+Message-ID: <test2-inbox-002@example.com>
+Content-Type: multipart/mixed; boundary="t2mix"
+
+--t2mix
+Content-Type: text/plain; charset=utf-8
+
+See the attached notes file. Use the Save button in the reading pane.
+
+--t2mix
+Content-Type: application/octet-stream; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+Content-Transfer-Encoding: base64
+
+VGhlc2UgYXJlIHRoZSBtZWV0aW5nIG5vdGVzLgpMaW5lIHR3byBvZiB0aGUgbm90ZXMu
+Cg==
+--t2mix--

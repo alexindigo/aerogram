@@ -16,7 +16,8 @@ public:
         SenderRole,
         DateRole,
         SnippetRole,
-        IsUnreadRole
+        IsUnreadRole,
+        HasAttachmentsRole
     };
 
     explicit MessageListModel(QObject *parent = nullptr);

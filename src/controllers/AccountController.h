@@ -1,41 +1,114 @@
 #ifndef ACCOUNTCONTROLLER_H
 #define ACCOUNTCONTROLLER_H
 
+#include <QMap>
 #include <QObject>
+#include <QPair>
 #include <QString>
+#include <QVariantList>
+#include <QVariantMap>
 #include "models/MessageListModel.h"
-#include "models/ChatListModel.h"
+#include "models/ConversationListModel.h"
 #include "core/plugin/BackendPlugin.h"
 
+/// \brief Single source of truth. Holds all backends keyed by
+///        accountId and routes compound conversation IDs
+///        ("<accountId>/<localId>") to the right backend. Backends
+///        stay account-unaware; compounding happens here.
 class AccountController : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(MessageListModel* messageListModel READ messageListModel CONSTANT)
-    Q_PROPERTY(ChatListModel* chatListModel READ chatListModel CONSTANT)
+    Q_PROPERTY(ConversationListModel* conversationListModel READ conversationListModel CONSTANT)
+    Q_PROPERTY(QString configStatus READ configStatus NOTIFY configStatusChanged)
+    Q_PROPERTY(QString activeView READ activeView WRITE setActiveView NOTIFY activeViewChanged)
+    Q_PROPERTY(QString activeAccountId READ activeAccountId NOTIFY activeAccountIdChanged)
+    Q_PROPERTY(QString activeConversationId READ activeConversationId NOTIFY activeConversationIdChanged)
+    Q_PROPERTY(QString activeMessageId READ activeMessageId NOTIFY activeMessageIdChanged)
+    Q_PROPERTY(QVariantMap activeMessage READ activeMessage NOTIFY activeMessageChanged)
+    Q_PROPERTY(QString activeMessageBody READ activeMessageBody NOTIFY activeMessageBodyChanged)
+    Q_PROPERTY(QVariantList activeMessageAttachments READ activeMessageAttachments NOTIFY activeMessageAttachmentsChanged)
 
 public:
-    explicit AccountController(BackendPlugin *plugin, QObject *parent = nullptr);
+    explicit AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
+                               QObject *parent = nullptr);
 
     MessageListModel *messageListModel() const;
-    ChatListModel *chatListModel() const;
+    ConversationListModel *conversationListModel() const;
+    QString configStatus() const;
+    QString activeView() const;
+    QString activeAccountId() const;
+    QString activeConversationId() const;
+    QString activeMessageId() const;
+    QVariantMap activeMessage() const;
+    QString activeMessageBody() const;
+    QVariantList activeMessageAttachments() const;
 
 public slots:
-    void fetchChatList();
-    void fetchMessages(const QString &chatId);
-    void sendMessage(const QString &chatId, const QString &text);
-    void configureAccount(const QString &email, const QString &password);
+    void fetchConversations();
+    void fetchMessages(const QString &conversationId);
+    void fetchMessageBody(const QString &conversationId, const QString &messageId);
+    void selectMessage(const QString &messageId);
+    void saveAttachment(const QString &messageId, int partIndex,
+                        const QString &destinationPath);
+    void sendMessage(const QString &conversationId, const QString &text);
+    void addAccount(const QVariantMap &credentials);
+    void setupFromQr(const QString &qrContent);
+    void getBackupFromQr(const QString &qrText);
+    void configureAccount(const QVariantMap &credentials);
     void triggerSync();
     void resetApp();
+    void setActiveView(const QString &view);
+    void selectAccount(const QString &accountId);
 
-private slots:
-    void onChatListReady(const QVector<ChatMessage> &chats);
-    void onMessagesReady(const QString &chatId, const QVector<Message> &messages);
-    void onMessageSent(bool ok, const QString &chatId);
+signals:
+    void configStatusChanged();
+    void activeViewChanged();
+    void activeAccountIdChanged();
+    void activeConversationIdChanged();
+    void activeMessageIdChanged();
+    void activeMessageChanged();
+    void activeMessageBodyChanged();
+    void activeMessageAttachmentsChanged();
+    void conversationsChanged();
+    void messagesChanged(const QString &conversationId);
+    void messageSent(bool ok, const QString &conversationId);
+    void messageBodyReady(const QString &conversationId, const QString &messageId,
+                          const QString &body);
+    void attachmentSaved(bool ok, const QString &messageId, const QString &path);
+    void ioStarted(const QString &accountId, bool ok, const QString &error);
+    void ioStopped(const QString &accountId);
+    void errorOccurred(const QString &error);
 
 private:
-    BackendPlugin *m_plugin;
+    void setConfigStatus(const QString &status);
+    void setActiveAccountId(const QString &accountId);
+    void setActiveConversationId(const QString &conversationId);
+    void setActiveMessageId(const QString &messageId);
+    void setActiveMessage(const QVariantMap &message);
+    void setActiveMessageBody(const QString &body);
+    void setActiveMessageAttachments(const QVariantList &attachments);
+
+    void connectBackend(const QString &accountId, BackendPlugin *backend);
+    BackendPlugin *backendFor(const QString &compoundConversationId,
+                              QString *localId = nullptr) const;
+    void rebuildMergedConversations();
+    void persistAccount(const QVariantMap &credentials);
+
+    QList<QPair<QString, BackendPlugin *>> m_backends;
+    QMap<QString, QVector<Conversation>> m_conversationsByAccount;
     MessageListModel *m_messageModel;
-    ChatListModel *m_chatModel;
+    ConversationListModel *m_conversationModel;
+    QVector<Message> m_activeMessages;
+    QString m_configStatus;
+    QString m_activeView;
+    QString m_activeAccountId;
+    QString m_activeConversationId;
+    QString m_activeMessageId;
+    QVariantMap m_activeMessage;
+    QString m_activeMessageBody;
+    QVariantList m_activeMessageAttachments;
+    bool m_autoSelected = false;
 };
 
 #endif

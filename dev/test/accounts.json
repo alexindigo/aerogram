@@ -1,0 +1,4 @@
+[
+  {"type": "imap", "host": "localhost", "port": 1143, "user": "test",  "pass": "test",  "tls": false},
+  {"type": "imap", "host": "localhost", "port": 1143, "user": "test2", "pass": "test2", "tls": false}
+]

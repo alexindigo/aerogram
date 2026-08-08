@@ -1,0 +1,14 @@
+From: Alice Chen <alice@example.com>
+To: test@localhost
+Subject: Welcome to Aerogram
+Date: Mon, 03 Aug 2026 09:15:00 +0200
+Message-ID: <welcome-001@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Hi,
+
+welcome to your new mail client. This message exercises the
+plain 7bit path through the parser.
+
+Cheers,
+Alice

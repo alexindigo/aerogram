@@ -5,8 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2 Sql Concurrent)
 find_package(KF6Kirigami REQUIRED)
+find_package(CURL REQUIRED)
 
 qt_add_executable(aerogram
     src/main.cpp
@@ -14,10 +15,19 @@ qt_add_executable(aerogram
     src/controllers/AccountController.cpp
     src/models/MessageListModel.h
     src/models/MessageListModel.cpp
-    src/models/ChatListModel.h
-    src/models/ChatListModel.cpp
+    src/models/ConversationListModel.h
+    src/models/ConversationListModel.cpp
+    src/core/Types.h
     src/core/plugin/BackendPlugin.h
+    src/core/plugin/Capabilities.h
     src/core/plugin/MockBackend.h
+    src/core/plugin/DeltaChatBackend.h
+    src/core/imap/CurlTransport.h
+    src/core/imap/MimeParser.h
+    src/core/imap/MessageStore.h
+    src/core/imap/MetadataIndex.h
+    src/core/imap/ImapBackend.h
+    src/core/ipc/IpcServer.h
 )
 
 qt_add_qml_module(aerogram
@@ -27,7 +37,9 @@ qt_add_qml_module(aerogram
         ui/main.qml
         ui/views/EmailInboxView.qml
         ui/views/ChatView.qml
+        ui/views/SettingsView.qml
         ui/components/Sidebar.qml
+        ui/components/AddAccountDialog.qml
 )
 
 target_include_directories(aerogram PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -36,5 +48,8 @@ target_link_libraries(aerogram PRIVATE
     Qt6::Core
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Sql
+    Qt6::Concurrent
     KF6::Kirigami
+    CURL::libcurl
 )

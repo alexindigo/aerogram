@@ -7,14 +7,12 @@ Kirigami.ScrollablePage {
     id: chatView
     title: "Chats"
 
-    signal chatSelected(string chatId)
-    signal composeMessageRequested()
-    signal groupInfoRequested(string chatId)
+    signal chatSelected(string conversationId)
 
     ListView {
         id: messageList
         anchors.fill: parent
-        model: accountController.chatListModel
+        model: accountController.conversationListModel
         spacing: 6
         clip: true
 
@@ -23,10 +21,10 @@ Kirigami.ScrollablePage {
             width: messageList.width - 16
             height: bubbleLayout.implicitHeight + 16
             radius: 12
-            color: model.isGroup
+            color: model.kind === "chat"
                 ? Kirigami.Theme.highlightColor
                 : Kirigami.Theme.alternateBackgroundColor
-            x: model.isGroup ? 8 : 24
+            x: model.kind === "chat" ? 8 : 24
 
             ColumnLayout {
                 id: bubbleLayout
@@ -42,13 +40,21 @@ Kirigami.ScrollablePage {
                     Layout.fillWidth: true
 
                     Label {
-                        text: model.senderName
-                        font.bold: true
+                        text: model.name + (model.unreadCount > 0
+                                            ? " (" + model.unreadCount + ")" : "")
+                        font.bold: model.unreadCount > 0
                         font.pixelSize: 13
                     }
 
                     Label {
-                        text: Qt.formatTime(model.timestamp, "hh:mm")
+                        text: model.accountLabel
+                        font.pixelSize: 10
+                        color: Kirigami.Theme.disabledTextColor
+                        visible: model.accountLabel.length > 0
+                    }
+
+                    Label {
+                        text: Qt.formatDateTime(model.lastActivity, "MMM d hh:mm")
                         font.pixelSize: 11
                         color: Kirigami.Theme.disabledTextColor
                         Layout.alignment: Qt.AlignRight
@@ -56,23 +62,24 @@ Kirigami.ScrollablePage {
                 }
 
                 Label {
-                    text: model.messageText
+                    text: model.preview
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
+                    visible: model.preview.length > 0
                 }
             }
 
             MouseArea {
                 anchors.fill: parent
-                onClicked: chatView.chatSelected(model.chatId)
+                onClicked: chatView.chatSelected(model.conversationId)
             }
         }
 
         Kirigami.PlaceholderMessage {
             anchors.centerIn: parent
             visible: messageList.count === 0
-            text: "No chats yet"
+            text: "No conversations yet"
         }
     }
 }

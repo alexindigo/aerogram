@@ -1,0 +1,19 @@
+From: Henry Walsh <henry@example.com>
+To: test@localhost
+Subject: Attachment handling
+Date: Wed, 05 Aug 2026 16:45:00 +0200
+Message-ID: <attach-008@example.com>
+Content-Type: multipart/mixed; boundary="mixbound"
+
+--mixbound
+Content-Type: text/plain; charset=utf-8
+
+This message has an attachment. The parser should show this text and
+ignore the attachment payload.
+
+--mixbound
+Content-Type: application/octet-stream; name="report.bin"
+Content-Transfer-Encoding: base64
+
+AAECAwQFBgcICQ==
+--mixbound--
