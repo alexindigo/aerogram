@@ -4,13 +4,12 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QMetaObject>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrent>
-
-#include <atomic>
 
 #include "core/Types.h"
 #include "core/plugin/BackendPlugin.h"
@@ -94,6 +93,29 @@ public:
         emit configured(true);
     }
 
+    /// \brief Provide the master key (post-unlock). Storage is
+    ///        encrypted at rest; without the key all storage reads
+    ///        fail closed. Called by the controller after unlock.
+    void setMasterKey(const QByteArray &key)
+    {
+        m_key = key;
+    }
+
+    /// \brief Rotation mode A helper: stop polling and delete this
+    ///        account's encrypted store. Resync rebuilds from the
+    ///        server. Call with IO stopped; the controller then hands
+    ///        the new key via setMasterKey + startIo.
+    void wipeLocalStore()
+    {
+        m_pollTimer->stop();
+        if (!m_storageRoot.isEmpty()) {
+            // m_storageRoot = <accountDir>/storage; wipe the account dir.
+            const QString accountDir = QFileInfo(m_storageRoot).absolutePath();
+            QDir(accountDir).removeRecursively();
+            QDir().mkpath(m_storageRoot);
+        }
+    }
+
     // -----------------------------------------------------------------
     // IO control
     // -----------------------------------------------------------------
@@ -135,10 +157,11 @@ public:
     void fetchConversations() override
     {
         const QString dbPath = m_dbPath;
-        QtConcurrent::run([this, dbPath]() {
+        const QByteArray key = m_key;
+        QtConcurrent::run([this, dbPath, key]() {
             QVector<Conversation> convs;
             {
-                MetadataIndex idx(dbPath, connectionName());
+                MetadataIndex idx(dbPath, key);
                 QString err;
                 if (idx.open(&err))
                     convs = idx.conversations();
@@ -156,10 +179,11 @@ public:
     void fetchMessages(const QString &conversationId) override
     {
         const QString dbPath = m_dbPath;
-        QtConcurrent::run([this, dbPath, conversationId]() {
+        const QByteArray key = m_key;
+        QtConcurrent::run([this, dbPath, key, conversationId]() {
             QVector<Message> msgs;
             {
-                MetadataIndex idx(dbPath, connectionName());
+                MetadataIndex idx(dbPath, key);
                 QString err;
                 if (idx.open(&err))
                     msgs = idx.messages(conversationId);
@@ -175,17 +199,18 @@ public:
     {
         const QString dbPath = m_dbPath;
         const QString storageRoot = m_storageRoot;
-        QtConcurrent::run([this, dbPath, storageRoot, conversationId, messageId]() {
+        const QByteArray key = m_key;
+        QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
             QString body;
             QString rel;
             {
-                MetadataIndex idx(dbPath, connectionName());
+                MetadataIndex idx(dbPath, key);
                 QString err;
                 if (idx.open(&err))
                     rel = idx.filePathForMessage(messageId);
             }
             if (!rel.isEmpty()) {
-                MessageStore store(storageRoot);
+                MessageStore store(storageRoot, key);
                 const QByteArray raw = store.get(rel);
                 if (!raw.isEmpty())
                     body = MimeParser::parse(raw).bodyPlain;
@@ -206,18 +231,19 @@ public:
     {
         const QString dbPath = m_dbPath;
         const QString storageRoot = m_storageRoot;
+        const QByteArray key = m_key;
         const QString dest = destinationPath;
-        QtConcurrent::run([this, dbPath, storageRoot, messageId, partIndex, dest]() {
+        QtConcurrent::run([this, dbPath, storageRoot, key, messageId, partIndex, dest]() {
             bool ok = false;
             QString rel;
             {
-                MetadataIndex idx(dbPath, connectionName());
+                MetadataIndex idx(dbPath, key);
                 QString err;
                 if (idx.open(&err))
                     rel = idx.filePathForMessage(messageId);
             }
             if (!rel.isEmpty()) {
-                MessageStore store(storageRoot);
+                MessageStore store(storageRoot, key);
                 const QByteArray raw = store.get(rel);
                 if (!raw.isEmpty()) {
                     const QByteArray bytes = MimeParser::extractAttachment(raw, partIndex);
@@ -240,6 +266,10 @@ private slots:
     {
         if (m_syncInFlight)
             return;
+        if (m_key.isEmpty()) {
+            qInfo() << "ImapBackend: sync skipped (locked, no master key)";
+            return;
+        }
         m_syncInFlight = true;
 
         const QString host = m_host, user = m_user, pass = m_pass;
@@ -248,13 +278,14 @@ private slots:
         const QString storageRoot = m_storageRoot;
         const QString dbPath = m_dbPath;
         const QString accountLabel = m_accountLabel;
+        const QByteArray key = m_key;
 
         QtConcurrent::run([this, host, port, user, pass, tls, storageRoot, dbPath,
-                           accountLabel]() {
+                           accountLabel, key]() {
             QString err;
             const QVector<Conversation> convs = syncWorker(host, port, user, pass, tls,
                                                            storageRoot, dbPath, accountLabel,
-                                                           &err);
+                                                           key, &err);
             QMetaObject::invokeMethod(this, [this, convs, err]() {
                 m_syncInFlight = false;
                 if (!err.isEmpty()) {
@@ -276,18 +307,13 @@ private slots:
     }
 
 private:
-    static QString connectionName()
-    {
-        static std::atomic<int> counter{0};
-        return QStringLiteral("imap-%1").arg(++counter);
-    }
-
     /// \brief Blocking sync worker. Runs on a QThreadPool thread.
     static QVector<Conversation> syncWorker(const QString &host, int port,
                                             const QString &user, const QString &pass,
                                             bool tls, const QString &storageRoot,
                                             const QString &dbPath,
                                             const QString &accountLabel,
+                                            const QByteArray &key,
                                             QString *errOut)
     {
         CurlTransport t(host, port, user, pass, tls);
@@ -299,10 +325,10 @@ private:
             return {};
         }
 
-        MessageStore store(storageRoot);
+        MessageStore store(storageRoot, key);
 
         {
-            MetadataIndex idx(dbPath, connectionName());
+            MetadataIndex idx(dbPath, key);
             if (!idx.open(&err)) {
                 if (errOut) *errOut = err;
                 return {};
@@ -386,6 +412,7 @@ private:
     QString m_storageRoot;
     QString m_dbPath;
     QString m_accountLabel;
+    QByteArray m_key;
     QTimer *m_pollTimer;
     bool m_syncInFlight = false;
 };

@@ -11,6 +11,7 @@
 #include "core/imap/ImapBackend.h"
 
 AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
+                                     MasterKeyManager *vault,
                                      QObject *parent)
     : QObject(parent)
     , m_backends(backends)
@@ -18,9 +19,19 @@ AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>
     , m_conversationModel(new ConversationListModel(this))
     , m_configStatus(QStringLiteral("Not configured"))
     , m_activeView(QStringLiteral("settings"))
+    , m_vault(vault)
 {
     for (const auto &pair : m_backends)
         connectBackend(pair.first, pair.second);
+
+    if (m_vault) {
+        connect(m_vault, &MasterKeyManager::isLockedChanged,
+                this, &AccountController::isLockedChanged);
+        connect(m_vault, &MasterKeyManager::statusTextChanged,
+                this, &AccountController::lockStatusTextChanged);
+        connect(m_vault, &MasterKeyManager::vaultStateChanged,
+                this, &AccountController::vaultStateChanged);
+    }
 }
 
 MessageListModel *AccountController::messageListModel() const
@@ -71,6 +82,26 @@ QString AccountController::activeMessageBody() const
 QVariantList AccountController::activeMessageAttachments() const
 {
     return m_activeMessageAttachments;
+}
+
+bool AccountController::isLocked() const
+{
+    return m_vault ? m_vault->isLocked() : false;
+}
+
+QString AccountController::lockStatusText() const
+{
+    return m_vault ? m_vault->statusText() : QString();
+}
+
+bool AccountController::vaultExists() const
+{
+    return m_vault ? m_vault->vaultExists() : false;
+}
+
+bool AccountController::vaultNeedsRecovery() const
+{
+    return m_vault ? m_vault->vaultNeedsRecovery() : false;
 }
 
 // ---------------------------------------------------------------------
@@ -409,12 +440,19 @@ void AccountController::addAccount(const QVariantMap &credentials)
         }
     }
 
+    if (m_vault && m_vault->isLocked()) {
+        setConfigStatus(QStringLiteral("Unlock Aerogram first, then add the account"));
+        return;
+    }
+
     // Prototype note: the controller constructing a concrete backend is
     // a deliberate shortcut — a factory plugin registry is the eventual
     // home for this (see docs/CLEANUP.md).
     auto *backend = new ImapBackend(this);
     backend->initialize({});
     backend->configure(credentials);
+    if (m_vault && !m_vault->isLocked())
+        backend->setMasterKey(m_vault->key());
 
     m_backends.append({accountId, backend});
     connectBackend(accountId, backend);
@@ -447,6 +485,93 @@ void AccountController::persistAccount(const QVariantMap &credentials)
         out.close();
         // Credentials on disk: owner-only.
         QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
+}
+
+/// \brief Shared post-unlock path — every successful vault entry point
+///        (create/unlock/recover) lands here: hand the data key to
+///        encrypted backends, start their IO, fetch conversations.
+void AccountController::onVaultUnlocked()
+{
+    const QByteArray key = m_vault->key();
+    for (const auto &pair : m_backends) {
+        if (auto *imap = qobject_cast<ImapBackend *>(pair.second)) {
+            imap->setMasterKey(key);
+            imap->startIo();
+        }
+    }
+    fetchConversations();
+}
+
+void AccountController::unlockWithPassphrase(const QString &passphrase)
+{
+    if (!m_vault)
+        return;
+    if (m_vault->unlock(passphrase))
+        onVaultUnlocked();
+}
+
+void AccountController::createVault(const QString &password, const QString &phrase)
+{
+    if (!m_vault)
+        return;
+    if (phrase.trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("Secret Key phrase must not be empty"));
+        return;
+    }
+    if (m_vault->create(password, phrase))
+        onVaultUnlocked();
+}
+
+void AccountController::recoverVault(const QString &password, const QString &phrase)
+{
+    if (!m_vault)
+        return;
+    if (phrase.trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("Secret Key phrase must not be empty"));
+        return;
+    }
+    if (m_vault->recover(password, phrase))
+        onVaultUnlocked();
+}
+
+/// \brief Rotation. Mode A ("wipe-resync"): the vault rewrites itself
+///        with keys from the new password/phrase, then each encrypted
+///        backend's store is wiped and resynced. Mode B (re-encrypt in
+///        place) is deferred to the vault-UX-polish phase.
+void AccountController::rotateVault(const QString &newPassword, const QString &newPhrase,
+                                    const QString &mode)
+{
+    if (!m_vault)
+        return;
+    if (m_vault->isLocked()) {
+        emit errorOccurred(QStringLiteral("Unlock first"));
+        return;
+    }
+    if (mode != QLatin1String("wipe-resync")) {
+        emit errorOccurred(QStringLiteral("Rotation mode not implemented: ") + mode);
+        return;
+    }
+
+    // Stop IO first so no in-flight worker writes with the old key
+    // into the soon-to-be-wiped store.
+    for (const auto &pair : m_backends) {
+        if (auto *imap = qobject_cast<ImapBackend *>(pair.second))
+            imap->stopIo();
+    }
+
+    if (!m_vault->rotate(newPassword, newPhrase, mode)) {
+        emit errorOccurred(QStringLiteral("Rotation failed"));
+        return;
+    }
+
+    const QByteArray key = m_vault->key();
+    for (const auto &pair : m_backends) {
+        if (auto *imap = qobject_cast<ImapBackend *>(pair.second)) {
+            imap->wipeLocalStore();
+            imap->setMasterKey(key);
+            imap->startIo();
+        }
     }
 }
 

@@ -61,4 +61,16 @@ Kirigami.ApplicationWindow {
             accountController.addAccount(credentials)
         }
     }
+
+    LockOverlay {
+        onUnlockRequested: (pass) => {
+            accountController.unlockWithPassphrase(pass)
+        }
+        onCreateVaultRequested: (pass, phrase) => {
+            accountController.createVault(pass, phrase)
+        }
+        onRecoveryRequested: (pass, phrase) => {
+            accountController.recoverVault(pass, phrase)
+        }
+    }
 }

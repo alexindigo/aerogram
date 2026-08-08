@@ -251,6 +251,7 @@ private:
                 [this](const QString &conversationId) {
                     QJsonObject p;
                     p["conversationId"] = conversationId;
+                    p["count"] = m_controller->messageListModel()->rowCount();
                     broadcastEvent(QStringLiteral("messagesChanged"), p);
                 });
 

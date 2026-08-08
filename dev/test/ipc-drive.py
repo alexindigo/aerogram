@@ -59,14 +59,31 @@ def main():
     assert resp and resp.get("result") == "pong", resp
     print("ping: OK")
 
+    # First run: createVault with master password + Secret Key phrase.
+    call(s, "createVault", ["proto-test-pass",
+                            "my cat is often grumpy in the mornings"], req_id=10)
+    # Each account's sync lands a conversationsChanged; wait for both.
+    for i in range(2):
+        p, buf = wait_for(s, buf, "conversationsChanged", lambda p: True)
+        assert p is not None, f"sync {i+1} did not complete after createVault"
+    print("createVault + sync (2 accounts): OK")
+
     conv1 = "imap:test@localhost/INBOX"
     conv2 = "imap:test2@localhost/INBOX"
 
-    call(s, "fetchMessages", [conv1], req_id=2)
-    p, buf = wait_for(s, buf, "messagesChanged",
-                      lambda p: p.get("conversationId") == conv1)
-    assert p is not None, "no messagesChanged for test INBOX"
-    print("messagesChanged(test INBOX): OK")
+    # Poll: an early fetchMessages moves the active conversation before
+    # sync lands (suppressing auto-select), so re-fetch until populated.
+    populated = None
+    for attempt in range(20):
+        call(s, "fetchMessages", [conv1], req_id=100 + attempt)
+        p, buf = wait_for(s, buf, "messagesChanged",
+                          lambda p: p.get("conversationId") == conv1, timeout=10)
+        assert p is not None, "no messagesChanged for test INBOX"
+        if p.get("count", 0) > 0:
+            populated = p
+            break
+    assert populated is not None, "test INBOX never populated"
+    print(f"messagesChanged(test INBOX): OK ({populated.get('count')} messages)")
 
     call(s, "fetchMessageBody", [conv1, "welcome-001@example.com"], req_id=3)
     p, buf = wait_for(s, buf, "messageBodyReady",
@@ -74,11 +91,17 @@ def main():
     assert p is not None, "body not returned/matched"
     print("messageBodyReady: OK (body matched)")
 
-    call(s, "fetchMessages", [conv2], req_id=4)
-    p, buf = wait_for(s, buf, "messagesChanged",
-                      lambda p: p.get("conversationId") == conv2)
-    assert p is not None, "no messagesChanged for test2 INBOX"
-    print("messagesChanged(test2 INBOX): OK")
+    populated2 = None
+    for attempt in range(20):
+        call(s, "fetchMessages", [conv2], req_id=200 + attempt)
+        p, buf = wait_for(s, buf, "messagesChanged",
+                          lambda p: p.get("conversationId") == conv2, timeout=10)
+        assert p is not None, "no messagesChanged for test2 INBOX"
+        if p.get("count", 0) > 0:
+            populated2 = p
+            break
+    assert populated2 is not None, "test2 INBOX never populated"
+    print(f"messagesChanged(test2 INBOX): OK ({populated2.get('count')} messages)")
 
     call(s, "saveAttachment", ["test2-inbox-002@example.com", 0, ATTACH_OUT], req_id=5)
     p, buf = wait_for(s, buf, "attachmentSaved",

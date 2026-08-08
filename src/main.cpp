@@ -8,6 +8,7 @@
 #include <QJsonObject>
 
 #include "core/Types.h"
+#include "core/crypto/MasterKeyManager.h"
 #include "core/plugin/Capabilities.h"
 #include "core/plugin/DeltaChatBackend.h"
 #include "core/plugin/MockBackend.h"
@@ -137,7 +138,22 @@ int main(int argc, char *argv[])
         + QStringLiteral("/accounts.json");
     loadAccountsFile(defaultAccounts, backends);
 
-    AccountController controller(backends);
+    // Encrypted backends (imap:*) need the vault. The app boots to a
+    // lock overlay; unlockWithPassphrase starts IO. Non-encrypted runs
+    // (mock/deltachat only) skip the vault entirely.
+    bool needsVault = false;
+    for (const auto &pair : backends) {
+        if (pair.first.startsWith(QLatin1String("imap:"))) {
+            needsVault = true;
+            break;
+        }
+    }
+
+    MasterKeyManager vault(
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/vault"));
+
+    AccountController controller(backends, needsVault ? &vault : nullptr);
 
     IpcServer ipc(&controller);
 
@@ -147,15 +163,10 @@ int main(int argc, char *argv[])
     const QUrl url(QStringLiteral("qrc:/Aerogram/ui/main.qml"));
     engine.load(url);
 
-    // IMAP backends self-sync via startIo (their fetchConversations
-    // just reads the index until the first sync lands). All backends
-    // get an initial fetchConversations so the merged list reflects
-    // any persisted index immediately.
-    for (const auto &pair : backends) {
-        if (pair.first.startsWith(QLatin1String("imap:")))
-            pair.second->startIo();
-    }
-    controller.fetchConversations();
+    // Encrypted backends start on unlock (controller drives that via
+    // unlockWithPassphrase). Unencrypted runs fetch immediately.
+    if (!needsVault)
+        controller.fetchConversations();
 
     return app.exec();
 }

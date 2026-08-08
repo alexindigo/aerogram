@@ -28,7 +28,10 @@ non-zero exit indicates an error.
 
 - Delta Chat account storage: `~/.config/aerogram/delta/`
 - IMAP prototype storage: `~/.local/share/Aerogram/imap/<user>@<host>/`
-  (per-account `index.db` + sharded `storage/<hh>/<hh>/<sha>.eml`)
+  (per-account **SQLCipher-encrypted** `index.db` + sharded
+  **encrypted** `storage/<hh>/<hh>/<sha>.enc`)
+- Vault: `~/.local/share/Aerogram/vault/` (`wrap-salt.bin`,
+  `secret-key.enc`, `keycheck.enc`)
 - IPC socket: `~/.cache/Aerogram/aerogram.ipc`
 
 Note: this system routes Qt logs to journald by default. Prefix runs
@@ -114,6 +117,52 @@ on every later launch — no CLI flags, nothing in shell history.
 
 Accounts from the CLI (`--accounts` / `--imap-*`) and the persisted
 file are merged with dedup by `imap:user@host`.
+
+### Encryption at rest + lock screen
+
+IMAP storage is encrypted: the DB is SQLCipher (AES-256) and each
+message file is ChaCha20-Poly1305 (libsodium secretbox). The data key
+is derived via Argon2id from your **master password + Secret Key
+phrase** (a memorable text you choose at first run, e.g. "my cat is
+often grumpy in the mornings"). The phrase is the portability
+artifact: password + phrase alone open any recovered `.enc` file, no
+vault artifact needed. The store is a cache — losing both secrets
+means re-init + resync from the servers.
+
+Vault files (`~/.local/share/Aerogram/vault/`, all 0600):
+
+| File | Contents |
+|------|----------|
+| `wrap-salt.bin` | random 16-byte wrap salt, plaintext (not secret) |
+| `secret-key.enc` | phrase encrypted with password-derived wrap key |
+| `keycheck.enc` | known-plaintext check encrypted with the data key |
+
+When any `imap:` account exists, Aerogram boots to a lock overlay:
+
+- **First run** (no vault): set master password + Secret Key phrase
+  (confirm both). The phrase is stored encrypted; daily unlocks need
+  only the password.
+- **Daily**: enter the master password.
+- **Recovery** (`secret-key.enc` lost/corrupt, or archive copied to a
+  fresh machine): click "Vault damaged? Recover with Secret Key",
+  enter password + phrase; the daily-unlock box is rewritten.
+
+Wrong password or phrase leaves the app locked with no IO. Rotation
+(`rotateVault` slot, mode `wipe-resync`) rewrites the vault, wipes the
+local store, and resyncs.
+
+Headless testing can drive the vault over IPC (slots are reflective):
+
+```bash
+# app running with --accounts=dev/test/accounts.json, then:
+python3 dev/test/ipc-drive.py   # includes the createVault step
+```
+
+To reset the vault (loses access to all encrypted stores):
+
+```bash
+rm -rf ~/.local/share/Aerogram/vault ~/.local/share/Aerogram/imap
+```
 
 Folder list appears in the chats (💬) view with per-account labels;
 selecting a conversation fills the email view (list left, reading pane

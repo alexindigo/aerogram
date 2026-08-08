@@ -5,9 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2 Sql Concurrent)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2 Concurrent)
 find_package(KF6Kirigami REQUIRED)
 find_package(CURL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SQLCIPHER REQUIRED sqlcipher)
+pkg_check_modules(SODIUM REQUIRED libsodium)
 
 qt_add_executable(aerogram
     src/main.cpp
@@ -18,6 +21,7 @@ qt_add_executable(aerogram
     src/models/ConversationListModel.h
     src/models/ConversationListModel.cpp
     src/core/Types.h
+    src/core/crypto/MasterKeyManager.h
     src/core/plugin/BackendPlugin.h
     src/core/plugin/Capabilities.h
     src/core/plugin/MockBackend.h
@@ -40,16 +44,30 @@ qt_add_qml_module(aerogram
         ui/views/SettingsView.qml
         ui/components/Sidebar.qml
         ui/components/AddAccountDialog.qml
+        ui/components/LockOverlay.qml
 )
 
-target_include_directories(aerogram PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(aerogram PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${SQLCIPHER_INCLUDE_DIRS}
+    ${SODIUM_INCLUDE_DIRS}
+)
+
+target_link_directories(aerogram PRIVATE
+    ${SQLCIPHER_LIBRARY_DIRS}
+    ${SODIUM_LIBRARY_DIRS}
+)
+
+# sqlcipher/sqlite3.h declares sqlite3_key() only under this guard.
+target_compile_definitions(aerogram PRIVATE SQLITE_HAS_CODEC)
 
 target_link_libraries(aerogram PRIVATE
     Qt6::Core
     Qt6::Quick
     Qt6::QuickControls2
-    Qt6::Sql
     Qt6::Concurrent
     KF6::Kirigami
     CURL::libcurl
+    ${SQLCIPHER_LIBRARIES}
+    ${SODIUM_LIBRARIES}
 )

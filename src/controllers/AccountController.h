@@ -10,6 +10,7 @@
 #include "models/MessageListModel.h"
 #include "models/ConversationListModel.h"
 #include "core/plugin/BackendPlugin.h"
+#include "core/crypto/MasterKeyManager.h"
 
 /// \brief Single source of truth. Holds all backends keyed by
 ///        accountId and routes compound conversation IDs
@@ -28,9 +29,14 @@ class AccountController : public QObject
     Q_PROPERTY(QVariantMap activeMessage READ activeMessage NOTIFY activeMessageChanged)
     Q_PROPERTY(QString activeMessageBody READ activeMessageBody NOTIFY activeMessageBodyChanged)
     Q_PROPERTY(QVariantList activeMessageAttachments READ activeMessageAttachments NOTIFY activeMessageAttachmentsChanged)
+    Q_PROPERTY(bool isLocked READ isLocked NOTIFY isLockedChanged)
+    Q_PROPERTY(QString lockStatusText READ lockStatusText NOTIFY lockStatusTextChanged)
+    Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
+    Q_PROPERTY(bool vaultNeedsRecovery READ vaultNeedsRecovery NOTIFY vaultStateChanged)
 
 public:
     explicit AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
+                               MasterKeyManager *vault = nullptr,
                                QObject *parent = nullptr);
 
     MessageListModel *messageListModel() const;
@@ -43,6 +49,10 @@ public:
     QVariantMap activeMessage() const;
     QString activeMessageBody() const;
     QVariantList activeMessageAttachments() const;
+    bool isLocked() const;
+    QString lockStatusText() const;
+    bool vaultExists() const;
+    bool vaultNeedsRecovery() const;
 
 public slots:
     void fetchConversations();
@@ -53,6 +63,10 @@ public slots:
                         const QString &destinationPath);
     void sendMessage(const QString &conversationId, const QString &text);
     void addAccount(const QVariantMap &credentials);
+    void unlockWithPassphrase(const QString &passphrase);
+    void createVault(const QString &password, const QString &phrase);
+    void recoverVault(const QString &password, const QString &phrase);
+    void rotateVault(const QString &newPassword, const QString &newPhrase, const QString &mode);
     void setupFromQr(const QString &qrContent);
     void getBackupFromQr(const QString &qrText);
     void configureAccount(const QVariantMap &credentials);
@@ -72,6 +86,9 @@ signals:
     void activeMessageAttachmentsChanged();
     void conversationsChanged();
     void messagesChanged(const QString &conversationId);
+    void isLockedChanged();
+    void lockStatusTextChanged();
+    void vaultStateChanged();
     void messageSent(bool ok, const QString &conversationId);
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body);
@@ -94,6 +111,7 @@ private:
                               QString *localId = nullptr) const;
     void rebuildMergedConversations();
     void persistAccount(const QVariantMap &credentials);
+    void onVaultUnlocked();
 
     QList<QPair<QString, BackendPlugin *>> m_backends;
     QMap<QString, QVector<Conversation>> m_conversationsByAccount;
@@ -108,6 +126,7 @@ private:
     QVariantMap m_activeMessage;
     QString m_activeMessageBody;
     QVariantList m_activeMessageAttachments;
+    MasterKeyManager *m_vault;  // may be null (no encrypted backends)
     bool m_autoSelected = false;
 };
 
