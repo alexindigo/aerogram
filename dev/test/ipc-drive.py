@@ -12,6 +12,7 @@ import json
 import os
 import socket
 import sys
+import time
 
 SOCK = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
                     "Aerogram/aerogram.ipc")
@@ -74,15 +75,19 @@ def main():
 
     # Poll: an early fetchMessages moves the active conversation before
     # sync lands (suppressing auto-select), so re-fetch until populated.
+    # Sleep between attempts — 0-count broadcasts answer fast, and a
+    # cold-start sync needs ~15s; without the sleep, 20 polls burn
+    # through in a few seconds and the assertion fires mid-sync.
     populated = None
-    for attempt in range(20):
+    for attempt in range(30):
         call(s, "fetchMessages", [conv1], req_id=100 + attempt)
         p, buf = wait_for(s, buf, "messagesChanged",
-                          lambda p: p.get("conversationId") == conv1, timeout=10)
+                          lambda p: p.get("conversationId") == conv1, timeout=15)
         assert p is not None, "no messagesChanged for test INBOX"
         if p.get("count", 0) > 0:
             populated = p
             break
+        time.sleep(1.5)
     assert populated is not None, "test INBOX never populated"
     print(f"messagesChanged(test INBOX): OK ({populated.get('count')} messages)")
 
@@ -93,14 +98,15 @@ def main():
     print("messageBodyReady: OK (body matched)")
 
     populated2 = None
-    for attempt in range(20):
+    for attempt in range(30):
         call(s, "fetchMessages", [conv2], req_id=200 + attempt)
         p, buf = wait_for(s, buf, "messagesChanged",
-                          lambda p: p.get("conversationId") == conv2, timeout=10)
+                          lambda p: p.get("conversationId") == conv2, timeout=15)
         assert p is not None, "no messagesChanged for test2 INBOX"
         if p.get("count", 0) > 0:
             populated2 = p
             break
+        time.sleep(1.5)
     assert populated2 is not None, "test2 INBOX never populated"
     print(f"messagesChanged(test2 INBOX): OK ({populated2.get('count')} messages)")
 
