@@ -1,3 +1,6 @@
+#ifndef MOCKBACKEND_H
+#define MOCKBACKEND_H
+
 #include "BackendPlugin.h"
 #include "Capabilities.h"
 #include "core/Types.h"
@@ -89,3 +92,5 @@ public:
         emit messageSent(true, conversationId);
     }
 };
+
+#endif
