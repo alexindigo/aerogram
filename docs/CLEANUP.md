@@ -164,32 +164,6 @@ changes programmatically.
 
 ---
 
-## Pattern F — Orphaned MockBackend
-
-### Description
-
-`src/core/plugin/MockBackend.h` implements `BackendPlugin` with
-hardcoded data. It is currently not instantiated anywhere. `main.cpp`
-uses `DeltaChatBackend` directly.
-
-### Options
-
-1. **Wire it in via CLI flag** — `--backend=mock|deltachat` in
-   `main.cpp`. Useful for offline development, future tests, and
-   working on UI without touching real Delta Chat state.
-2. **Delete it** — one less file to maintain; rebuild it later if
-   needed.
-3. **Keep as-is, don't wire** — leaves it as reference documentation
-   for future backend implementers.
-
-### Proposed direction
-
-Option 1 (CLI flag). It's the highest-leverage: unlocks UI-only work,
-supports future automated tests, keeps the plugin interface honest by
-having a second consumer. Cost is ~5 lines in `main.cpp`.
-
----
-
 ## Pattern G — Full-reset model updates
 
 ### Description

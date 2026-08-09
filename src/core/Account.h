@@ -14,7 +14,8 @@ struct Account {
     QString type;           // "imap" (registry type string)
     QString label;          // alice@gmail.com (display)
     QString userpic;        // local file / provider URL, may be empty
-    QString color;          // #hex, persisted; empty = derive at display
+    QString color;          // #hex, derived deterministically from id at
+                            // registration (persisted color comes later)
     int index = 0;          // rail order (reorderable later)
     QVariantMap credentials;  // backend-shaped blob (contains pass etc.)
     BackendPlugin *backend = nullptr;

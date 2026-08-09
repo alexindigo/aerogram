@@ -169,9 +169,8 @@ JSON-RPC request arrives
 ```
 
 Adding a new public slot to `AccountController` immediately makes it
-available over IPC. **(TARGET STATE)** The IPC layer currently uses
-hand-written per-method dispatch; migrating it to reflective invocation
-is planned.
+available over IPC. The IPC layer (`IpcServer`) dispatches incoming
+calls reflectively via `QMetaObject::invoke` — no per-method wiring.
 
 ### Outgoing — controller signals broadcast to IPC clients
 
@@ -182,7 +181,10 @@ Controller signal fires
     → all connected clients receive the event
 ```
 
-**(TARGET STATE)** Signal-to-event broadcast is not yet implemented.
+Outgoing broadcast exists: `IpcServer::subscribeToControllerSignals`
+has per-signal `connect()` lines that serialize each controller signal
+into a JSON-RPC notification. **(TARGET STATE)** Fully reflective
+signal-to-event broadcast (no per-signal wiring) remains planned.
 
 ### Rules
 

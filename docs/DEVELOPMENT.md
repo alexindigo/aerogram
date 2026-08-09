@@ -122,11 +122,10 @@ The container ships two users (`test`/`test`, `test2`/`test2`), so
 
 ### Adding accounts from the UI
 
-The **+** button (top of the sidebar) opens the add-account dialog
-(host, port, user, password/app-password, TLS). Submitted accounts
-start syncing immediately and persist to
-`~/.config/Aerogram/accounts.json` (0600, owner-only) so they auto-load
-on every later launch — no CLI flags, nothing in shell history.
+The **+** button (bottom of the sidebar rail) opens the add-account
+dialog (host, port, user, password/app-password, TLS). Submitted
+accounts verify their connection first, then persist into the
+encrypted vault DB (`vault/accounts.db`) and auto-load post-unlock.
 
 Accounts from the CLI (`--accounts` / `--imap-*`) are runtime-only and
 never persisted; accounts added via the **+** dialog persist into the

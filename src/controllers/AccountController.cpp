@@ -184,8 +184,8 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
     a.id = a.label + QLatin1Char('#') + type;
 
     a.index = m_accounts.size();
-    // Color: deterministic per id (md5 — qHash is not stable across
-    // runs). Persisted on add so the rail color never drifts.
+    // Color: derived deterministically from the account id (md5 —
+    // qHash is not stable across runs), so the rail color never drifts.
     static const char *palette[] = {
         "#4c9baf", "#7a5fb5", "#b5546e", "#5f8f4e", "#b58433", "#3f7fa5"
     };
