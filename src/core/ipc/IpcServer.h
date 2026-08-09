@@ -52,6 +52,9 @@ public:
         QDir().mkpath(QFileInfo(socketPath).absolutePath());
         QLocalServer::removeServer(socketPath);
 
+        // Same-user only — the socket carries credentials in motion.
+        m_server->setSocketOptions(QLocalServer::UserAccessOption);
+
         connect(m_server, &QLocalServer::newConnection, this, &IpcServer::onNewConnection);
 
         if (!m_server->listen(socketPath))
@@ -185,7 +188,13 @@ private:
             stored.append(v);
         }
 
-        // Assemble up to 5 QGenericArgument slots (extend if needed).
+        // Assemble up to 5 QGenericArgument slots. Fail loudly instead
+        // of silently truncating extra parameters.
+        if (matched.parameterCount() > 5) {
+            sendError(client, id, -32602,
+                      QStringLiteral("Method has more than 5 parameters: ") + method);
+            return;
+        }
         QGenericArgument a[5];
         for (int i = 0; i < stored.size() && i < 5; ++i)
             a[i] = QGenericArgument(stored[i].typeName(), stored[i].constData());
