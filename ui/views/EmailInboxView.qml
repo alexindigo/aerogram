@@ -11,6 +11,10 @@ Kirigami.Page {
     padding: 0
 
     signal messageSelected(string messageId)
+    signal attachmentSaveRequested(string messageId, int partIndex, string path)
+
+    // Set from main.qml's wiring of accountController.attachmentSaved.
+    property string saveStatusText: ""
 
     RowLayout {
         anchors.fill: parent
@@ -247,8 +251,8 @@ Kirigami.Page {
                 }
 
                 Label {
-                    id: saveStatus
-                    text: ""
+                    visible: text.length > 0
+                    text: inboxView.saveStatusText
                     font.pixelSize: 11
                     color: Kirigami.Theme.disabledTextColor
                 }
@@ -263,15 +267,8 @@ Kirigami.Page {
         onAccepted: {
             // strip file:// AND decode percent-encoding (%20 etc.)
             const path = decodeURIComponent(String(selectedFile).replace(/^file:\/\//, ""))
-            accountController.saveAttachment(accountController.activeMessageId,
-                                             pendingIndex, path)
-        }
-    }
-
-    Connections {
-        target: accountController
-        function onAttachmentSaved(ok, messageId, path) {
-            saveStatus.text = ok ? "Saved to " + path : "Save failed"
+            inboxView.attachmentSaveRequested(accountController.activeMessageId,
+                                              pendingIndex, path)
         }
     }
 }

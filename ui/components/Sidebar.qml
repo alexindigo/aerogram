@@ -14,6 +14,7 @@ Rectangle {
 
     signal addAccountRequested()
     signal settingsRequested()
+    signal accountSelected(string accountId)
 
     ColumnLayout {
         anchors.fill: parent
@@ -62,7 +63,7 @@ Rectangle {
 
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: accountController.selectAccount(model.accountId)
+                        onClicked: sidebar.accountSelected(model.accountId)
                     }
                 }
             }

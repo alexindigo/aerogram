@@ -21,6 +21,7 @@ Kirigami.ApplicationWindow {
 
             onSettingsRequested: accountController.setActiveView("settings")
             onAddAccountRequested: addAccountDialog.open()
+            onAccountSelected: (id) => accountController.selectAccount(id)
         }
 
         StackLayout {
@@ -29,8 +30,12 @@ Kirigami.ApplicationWindow {
             currentIndex: root.viewMap[accountController.activeView] ?? 0
 
             EmailInboxView {
+                id: emailInboxView
                 onMessageSelected: (messageId) => {
                     accountController.selectMessage(messageId)
+                }
+                onAttachmentSaveRequested: (messageId, partIndex, path) => {
+                    accountController.saveAttachment(messageId, partIndex, path)
                 }
             }
 
@@ -57,6 +62,13 @@ Kirigami.ApplicationWindow {
         id: addAccountDialog
         onAccountSubmitted: (credentials) => {
             accountController.addAccount(credentials)
+        }
+    }
+
+    Connections {
+        target: accountController
+        function onAttachmentSaved(ok, messageId, path) {
+            emailInboxView.saveStatusText = ok ? "Saved to " + path : "Save failed"
         }
     }
 
