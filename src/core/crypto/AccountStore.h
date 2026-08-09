@@ -157,6 +157,20 @@ public:
         return ok;
     }
 
+    /// \brief Re-key the open database to \p newKey (SQLCipher
+    ///        sqlite3_rekey). The handle must have been opened (and
+    ///        verified) with the OLD key. Used by vault rotation so the
+    ///        accounts table survives a dataKey change.
+    bool rekey(const QByteArray &newKey, QString *err = nullptr)
+    {
+        if (sqlite3_rekey(m_db, newKey.constData(),
+                          static_cast<int>(newKey.size())) != SQLITE_OK) {
+            if (err) *err = QString::fromUtf8(sqlite3_errmsg(m_db));
+            return false;
+        }
+        return true;
+    }
+
     /// \brief True when the table has no rows (used by the one-time
     ///        legacy accounts.json migration).
     bool isEmpty()

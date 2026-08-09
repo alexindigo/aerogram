@@ -716,6 +716,13 @@ void AccountController::rotateVault(const QString &newPassword, const QString &n
         return;
     }
 
+    // Capture the old key before rotation — accounts.db is still keyed
+    // with it, and sqlite3_rekey needs a handle opened with the old key.
+    // detach(): QByteArray is implicitly shared, and the vault's rotate
+    // zeroizes its own buffer — a shared copy would be zeroed with it.
+    QByteArray oldKey = m_vault->key();
+    oldKey.detach();
+
     // Stop IO first so no in-flight worker writes with the old key
     // into the soon-to-be-wiped store.
     for (const Account &a : m_accounts) {
@@ -724,9 +731,21 @@ void AccountController::rotateVault(const QString &newPassword, const QString &n
     }
 
     if (!m_vault->rotate(newPassword, newPhrase, mode)) {
+        sodium_memzero(oldKey.data(), oldKey.size());
         emit errorOccurred(QStringLiteral("Rotation failed"));
         return;
     }
+
+    // Re-key the accounts DB in place — it was written with the old
+    // dataKey and must follow the vault to the new one, or the next
+    // open fails its sqlite_master probe ("file is not a database").
+    {
+        AccountStore store(accountsDbPath(), oldKey);
+        QString err;
+        if (!store.open(&err) || !store.rekey(m_vault->key(), &err))
+            emit errorOccurred(QStringLiteral("Accounts DB re-key failed: ") + err);
+    }
+    sodium_memzero(oldKey.data(), oldKey.size());
 
     const QByteArray key = m_vault->key();
     for (const Account &a : m_accounts) {
