@@ -193,6 +193,9 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
     a.color = QString::fromLatin1(
         palette[static_cast<unsigned char>(hash.at(0)) % (sizeof(palette) / sizeof(palette[0]))]);
 
+    // The controller owns backend instances (Qt parent-child teardown).
+    backend->setParent(this);
+
     m_accounts.append(a);
     connectBackend(m_accounts.last());
     rebuildAccountsModel();
@@ -233,6 +236,10 @@ void AccountController::connectBackend(const Account &account)
     // get compounded ("<accountId>/<localId>") on the way in.
     connect(backend, &BackendPlugin::conversationsReady, this,
             [this, accountId](const QVector<Conversation> &convs) {
+                // Ghost-signal guard: a queued emission can already be
+                // in the event queue when the account is removed.
+                if (!accountById(accountId))
+                    return;
                 QVector<Conversation> compounded;
                 compounded.reserve(convs.size());
                 for (Conversation c : convs) {
@@ -510,14 +517,21 @@ void AccountController::addAccount(const QVariantMap &credentials)
 ///        CLI-provided accounts are only unregistered at runtime.
 void AccountController::removeAccount(const QString &accountId)
 {
-    Account *account = accountById(accountId);
-    if (!account) {
+    Account *found = accountById(accountId);
+    if (!found) {
         emit errorOccurred(QStringLiteral("No such account: ") + accountId);
         return;
     }
 
-    account->backend->stopIo();
-    account->backend->shutdown();
+    // Value copy up front: removeAt() dangles pointers into the list.
+    const Account account = *found;
+
+    account.backend->stopIo();
+    account.backend->shutdown();
+    // No ghost signals from the removed backend, and no leak: drop our
+    // connect()s, then schedule deletion on the event loop.
+    disconnect(account.backend, nullptr, this, nullptr);
+    account.backend->deleteLater();
 
     for (int i = 0; i < m_accounts.size(); ++i) {
         if (m_accounts[i].id == accountId) {
@@ -531,17 +545,17 @@ void AccountController::removeAccount(const QString &accountId)
     if (m_activeAccountId == accountId)
         setActiveAccountId(QString());
 
-    if (m_vault && !m_vault->isLocked() && !account->label.isEmpty()
-            && account->label != account->type) {
+    if (m_vault && !m_vault->isLocked() && !account.label.isEmpty()
+            && account.label != account.type) {
         // label is user@host; split on LAST '@' (user may be an email
         // address containing '@').
-        const int at = account->label.lastIndexOf(QLatin1Char('@'));
+        const int at = account.label.lastIndexOf(QLatin1Char('@'));
         if (at > 0) {
             AccountStore store(accountsDbPath(), m_vault->key());
             QString err;
             if (store.open(&err)
-                    && !store.remove(account->type, account->label.left(at),
-                                     account->label.mid(at + 1), &err))
+                    && !store.remove(account.type, account.label.left(at),
+                                     account.label.mid(at + 1), &err))
                 emit errorOccurred(QStringLiteral("Remove persisted account failed: ") + err);
         }
     }
