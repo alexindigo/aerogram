@@ -261,7 +261,8 @@ Kirigami.Page {
         fileMode: FileDialog.SaveFile
         property int pendingIndex: -1
         onAccepted: {
-            const path = String(selectedFile).replace(/^file:\/\//, "")
+            // strip file:// AND decode percent-encoding (%20 etc.)
+            const path = decodeURIComponent(String(selectedFile).replace(/^file:\/\//, ""))
             accountController.saveAttachment(accountController.activeMessageId,
                                              pendingIndex, path)
         }
