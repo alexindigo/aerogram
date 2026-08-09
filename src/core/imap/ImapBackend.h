@@ -5,11 +5,14 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureSynchronizer>
 #include <QMetaObject>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrent>
+
+#include <atomic>
 
 #include "core/Types.h"
 #include "core/plugin/BackendPlugin.h"
@@ -68,8 +71,12 @@ public:
 
     void shutdown() override
     {
+        // Stop scheduling new work, then wait for in-flight workers so
+        // nothing captures a dangling `this` after destruction.
+        m_shuttingDown = true;
         if (m_pollTimer->isActive())
             m_pollTimer->stop();
+        m_workers.waitForFinished();
     }
 
     // -----------------------------------------------------------------
@@ -130,7 +137,8 @@ public:
         const int port = m_port;
         const bool tls = m_tls;
 
-        QtConcurrent::run([this, host, port, user, pass, tls]() {
+        m_workers.addFuture(QtConcurrent::run([this, host, port, user, pass, tls]() {
+            if (m_shuttingDown) return;
             CurlTransport t(host, port, user, pass, tls);
             QStringList folders;
             QString err;
@@ -144,7 +152,7 @@ public:
                     emit ioStarted(false, err);
                 }
             }, Qt::QueuedConnection);
-        });
+        }));
     }
 
     void stopIo() override
@@ -161,7 +169,8 @@ public:
     {
         const QString dbPath = m_dbPath;
         const QByteArray key = m_key;
-        QtConcurrent::run([this, dbPath, key]() {
+        m_workers.addFuture(QtConcurrent::run([this, dbPath, key]() {
+            if (m_shuttingDown) return;
             QVector<Conversation> convs;
             {
                 MetadataIndex idx(dbPath, key);
@@ -172,7 +181,7 @@ public:
             QMetaObject::invokeMethod(this, [this, convs]() {
                 emit conversationsReady(convs);
             }, Qt::QueuedConnection);
-        });
+        }));
     }
 
     // -----------------------------------------------------------------
@@ -183,7 +192,8 @@ public:
     {
         const QString dbPath = m_dbPath;
         const QByteArray key = m_key;
-        QtConcurrent::run([this, dbPath, key, conversationId]() {
+        m_workers.addFuture(QtConcurrent::run([this, dbPath, key, conversationId]() {
+            if (m_shuttingDown) return;
             QVector<Message> msgs;
             {
                 MetadataIndex idx(dbPath, key);
@@ -195,7 +205,7 @@ public:
                 qInfo() << "ImapBackend: messagesReady" << conversationId << msgs.size() << "messages";
                 emit messagesReady(conversationId, msgs);
             }, Qt::QueuedConnection);
-        });
+        }));
     }
 
     void fetchMessageBody(const QString &conversationId, const QString &messageId) override
@@ -203,7 +213,8 @@ public:
         const QString dbPath = m_dbPath;
         const QString storageRoot = m_storageRoot;
         const QByteArray key = m_key;
-        QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
+        m_workers.addFuture(QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
+            if (m_shuttingDown) return;
             QString body;
             QString rel;
             {
@@ -225,7 +236,7 @@ public:
                 qInfo() << "ImapBackend: messageBodyReady" << messageId << body.size() << "chars";
                 emit messageBodyReady(conversationId, messageId, body);
             }, Qt::QueuedConnection);
-        });
+        }));
     }
 
     // -----------------------------------------------------------------
@@ -239,7 +250,8 @@ public:
         const QString storageRoot = m_storageRoot;
         const QByteArray key = m_key;
         const QString dest = destinationPath;
-        QtConcurrent::run([this, dbPath, storageRoot, key, messageId, partIndex, dest]() {
+        m_workers.addFuture(QtConcurrent::run([this, dbPath, storageRoot, key, messageId, partIndex, dest]() {
+            if (m_shuttingDown) return;
             bool ok = false;
             QString rel;
             {
@@ -264,7 +276,7 @@ public:
                 qInfo() << "ImapBackend: attachmentSaved" << ok << messageId << dest;
                 emit attachmentSaved(ok, messageId, dest);
             }, Qt::QueuedConnection);
-        });
+        }));
     }
 
 private slots:
@@ -286,8 +298,9 @@ private slots:
         const QString accountLabel = m_accountLabel;
         const QByteArray key = m_key;
 
-        QtConcurrent::run([this, host, port, user, pass, tls, storageRoot, dbPath,
+        m_workers.addFuture(QtConcurrent::run([this, host, port, user, pass, tls, storageRoot, dbPath,
                            accountLabel, key]() {
+            if (m_shuttingDown) return;
             QString err;
             const QVector<Conversation> convs = syncWorker(host, port, user, pass, tls,
                                                            storageRoot, dbPath, accountLabel,
@@ -310,7 +323,7 @@ private slots:
                     }
                 }
             }, Qt::QueuedConnection);
-        });
+        }));
     }
 
 private:
@@ -421,6 +434,8 @@ private:
     QString m_accountLabel;
     QByteArray m_key;
     QTimer *m_pollTimer;
+    QFutureSynchronizer<void> m_workers;
+    std::atomic<bool> m_shuttingDown{false};
     bool m_syncInFlight = false;
 };
 
