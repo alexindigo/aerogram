@@ -416,12 +416,15 @@ private:
             QFile f(tmp);
             if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
                 return false;
+            // Owner-only BEFORE writing — the previous version chmod'd
+            // after write, leaving a window where the temp file held
+            // vault material with umask-default permissions.
+            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
             if (f.write(data) != data.size())
                 return false;
             f.flush();
             f.close();
         }
-        QFile::setPermissions(tmp, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
         QFile::remove(path);
         std::error_code ec;
         std::filesystem::rename(tmp.toStdString(), path.toStdString(), ec);
