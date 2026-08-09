@@ -61,12 +61,13 @@ int main(int argc, char *argv[])
     // Backend class registry: type → factory. The controller creates
     // instances through this and never names a concrete class. Adding a
     // backend (e.g. Proton) = one registerType call here.
+    // Factories construct + initialize only; configure() emits
+    // configured(), so it must run after signal wiring — the controller
+    // calls it inside registerAccount (after connectBackend).
     BackendRegistry::registerType(QStringLiteral("imap"),
-        [](const QVariantMap &creds) -> BackendPlugin * {
+        [](const QVariantMap &) -> BackendPlugin * {
             auto *backend = new ImapBackend();
             backend->initialize({});
-            if (auto *c = dynamic_cast<ICredentialsSetup *>(backend))
-                c->configure(creds);
             return backend;
         });
     BackendRegistry::registerType(QStringLiteral("mock"),

@@ -198,6 +198,10 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
 
     m_accounts.append(a);
     connectBackend(m_accounts.last());
+    // configure() emits configured() — must run after connectBackend so
+    // the signal isn't lost.
+    if (auto *c = dynamic_cast<ICredentialsSetup *>(backend))
+        c->configure(credentials);
     rebuildAccountsModel();
     emit backendsChanged();
     updateLockOverlayVisibility();
