@@ -364,6 +364,13 @@ void AccountController::rebuildMergedConversations()
     m_conversationModel->setConversations(merged);
     emit conversationsChanged();
 
+    // Data-arrived-after-early-selection: if a conversation is active
+    // but its model is empty (the user or a test selected it before the
+    // sync landed), re-fetch now that the index has content.
+    if (!m_activeConversationId.isEmpty()
+            && m_messageModel->rowCount() == 0)
+        fetchMessages(m_activeConversationId);
+
     // One-time default selection: prefer a conversation named INBOX,
     // else the first. Keeps the email view populated without clicks.
     if (!m_autoSelected && m_activeConversationId.isEmpty() && !merged.isEmpty()) {

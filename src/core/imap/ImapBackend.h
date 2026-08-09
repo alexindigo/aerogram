@@ -171,6 +171,15 @@ public:
         const QByteArray key = m_key;
         m_workers.addFuture(QtConcurrent::run([this, dbPath, key]() {
             if (m_shuttingDown) return;
+            // Fail closed: without the key, never touch the DB — opening
+            // it keyless would create a plaintext index.db that later
+            // encrypted opens reject (HMAC failure).
+            if (key.isEmpty()) {
+                QMetaObject::invokeMethod(this, [this]() {
+                    emit conversationsReady({});
+                }, Qt::QueuedConnection);
+                return;
+            }
             QVector<Conversation> convs;
             {
                 MetadataIndex idx(dbPath, key);
@@ -195,6 +204,12 @@ public:
         m_workers.addFuture(QtConcurrent::run([this, dbPath, key, conversationId]() {
             if (m_shuttingDown) return;
             QVector<Message> msgs;
+            if (key.isEmpty()) {
+                QMetaObject::invokeMethod(this, [this, conversationId]() {
+                    emit messagesReady(conversationId, {});
+                }, Qt::QueuedConnection);
+                return;
+            }
             {
                 MetadataIndex idx(dbPath, key);
                 QString err;
@@ -217,6 +232,12 @@ public:
             if (m_shuttingDown) return;
             QString body;
             QString rel;
+            if (key.isEmpty()) {
+                QMetaObject::invokeMethod(this, [this, conversationId, messageId]() {
+                    emit messageBodyReady(conversationId, messageId, QString());
+                }, Qt::QueuedConnection);
+                return;
+            }
             {
                 MetadataIndex idx(dbPath, key);
                 QString err;
@@ -254,6 +275,12 @@ public:
             if (m_shuttingDown) return;
             bool ok = false;
             QString rel;
+            if (key.isEmpty()) {
+                QMetaObject::invokeMethod(this, [this, messageId, dest]() {
+                    emit attachmentSaved(false, messageId, dest);
+                }, Qt::QueuedConnection);
+                return;
+            }
             {
                 MetadataIndex idx(dbPath, key);
                 QString err;
