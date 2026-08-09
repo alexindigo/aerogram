@@ -181,6 +181,7 @@ inline QString extractText(const QByteArray &raw, int depth = 0)
             pos = idx + delim.size();
         }
         QString htmlFallback;
+        QString plainFallback;
         for (const QByteArray &partRaw : parts) {
             const QByteArray trimmed = partRaw.trimmed();
             if (trimmed.isEmpty() || trimmed == "--") continue;
@@ -193,12 +194,19 @@ inline QString extractText(const QByteArray &raw, int depth = 0)
                 const QString nested = extractText(trimmed, depth + 1);
                 if (!nested.isEmpty()) return nested;
             } else if (subCt.startsWith(QStringLiteral("text/plain"), Qt::CaseInsensitive)) {
-                return QString::fromUtf8(decodeBody(sub.body, subCte));
+                const QString plain = QString::fromUtf8(decodeBody(sub.body, subCte));
+                // Marketing mail often ships a blank text/plain stub
+                // beside the real HTML part; a blank stub must not win.
+                if (!plain.trimmed().isEmpty())
+                    return plain;
+                if (plainFallback.isEmpty())
+                    plainFallback = plain;
             } else if (subCt.startsWith(QStringLiteral("text/html"), Qt::CaseInsensitive)) {
                 if (htmlFallback.isEmpty())
                     htmlFallback = stripHtml(QString::fromUtf8(decodeBody(sub.body, subCte)));
             }
         }
+        if (!plainFallback.isEmpty()) return plainFallback;
         return htmlFallback;
     }
 

@@ -16,6 +16,8 @@ public:
 
     QString name() const override { return QStringLiteral("mock"); }
 
+    QString family() const override { return QStringLiteral("chat"); }
+
     bool initialize(const QVariantMap &params) override
     {
         Q_UNUSED(params);

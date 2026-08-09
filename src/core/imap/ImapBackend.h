@@ -30,7 +30,8 @@
 class ImapBackend : public BackendPlugin,
                     public IConversationProvider,
                     public IMessageProvider,
-                    public ICredentialsSetup
+                    public ICredentialsSetup,
+                    public IMasterKeyAware
 {
     Q_OBJECT
 
@@ -46,6 +47,8 @@ public:
     ~ImapBackend() override { shutdown(); }
 
     QString name() const override { return QStringLiteral("imap"); }
+
+    QString family() const override { return QStringLiteral("email"); }
 
     // -----------------------------------------------------------------
     // Lifecycle
@@ -212,8 +215,11 @@ public:
             if (!rel.isEmpty()) {
                 MessageStore store(storageRoot, key);
                 const QByteArray raw = store.get(rel);
+                qInfo() << "ImapBackend: body fetch" << messageId << "raw" << raw.size() << "bytes";
                 if (!raw.isEmpty())
                     body = MimeParser::parse(raw).bodyPlain;
+            } else {
+                qInfo() << "ImapBackend: body fetch" << messageId << "no file_path in index";
             }
             QMetaObject::invokeMethod(this, [this, conversationId, messageId, body]() {
                 qInfo() << "ImapBackend: messageBodyReady" << messageId << body.size() << "chars";
@@ -289,6 +295,7 @@ private slots:
             QMetaObject::invokeMethod(this, [this, convs, err]() {
                 m_syncInFlight = false;
                 if (!err.isEmpty()) {
+                    qWarning() << "ImapBackend: sync failed:" << err;
                     emit errorOccurred(err);
                     return;
                 }

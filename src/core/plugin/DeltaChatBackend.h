@@ -66,6 +66,8 @@ public:
 
     QString name() const override { return QStringLiteral("deltachat"); }
 
+    QString family() const override { return QStringLiteral("chat"); }
+
     // -----------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------

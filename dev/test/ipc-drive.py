@@ -69,8 +69,8 @@ def main():
         assert p is not None, f"sync {i+1} did not complete after createVault"
     print("createVault + sync (2 accounts): OK")
 
-    conv1 = "imap:test@localhost/INBOX"
-    conv2 = "imap:test2@localhost/INBOX"
+    conv1 = "test@localhost#imap/INBOX"
+    conv2 = "test2@localhost#imap/INBOX"
 
     # Poll: an early fetchMessages moves the active conversation before
     # sync lands (suppressing auto-select), so re-fetch until populated.

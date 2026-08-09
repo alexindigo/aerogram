@@ -9,6 +9,7 @@
 
 #include "core/Types.h"
 #include "core/crypto/MasterKeyManager.h"
+#include "core/plugin/BackendRegistry.h"
 #include "core/plugin/Capabilities.h"
 #include "core/plugin/DeltaChatBackend.h"
 #include "core/plugin/MockBackend.h"
@@ -16,50 +17,31 @@
 #include "controllers/AccountController.h"
 #include "core/ipc/IpcServer.h"
 
-static BackendPlugin *makeImapBackend(const QVariantMap &creds)
+/// \brief Extract the bundled default icon pack (Tabler, MIT) into the
+///        user's data dir on first run. The UI reads icons from disk so
+///        the pack is user-replaceable; later phases add user packs and
+///        a switcher.
+static QString installIconPack()
 {
-    auto *imap = new ImapBackend();
-    imap->initialize({});
-    imap->configure(creds);
-    return imap;
-}
-
-/// \brief Append IMAP accounts from a JSON file. Duplicates (same
-///        imap:user@host) are skipped so the default config file and
-///        CLI flags can coexist.
-static void loadAccountsFile(const QString &path,
-                             QList<QPair<QString, BackendPlugin *>> &backends)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly))
-        return;
-
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    for (const QJsonValue &v : doc.array()) {
-        const QJsonObject o = v.toObject();
-        if (o.value(QStringLiteral("type")).toString() != QLatin1String("imap")) {
-            qWarning().noquote() << "Unknown account type in" << path << ":"
-                                 << o.value(QStringLiteral("type")).toString();
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + QStringLiteral("/icons/default");
+    QDir().mkpath(dir);
+    const QStringList names = {
+        QStringLiteral("plus"), QStringLiteral("settings"),
+        QStringLiteral("lock"), QStringLiteral("paperclip"),
+    };
+    for (const QString &n : names) {
+        const QString dst = dir + QLatin1Char('/') + n + QStringLiteral(".svg");
+        if (QFile::exists(dst))
             continue;
-        }
-        QVariantMap creds;
-        creds[QStringLiteral("host")] = o.value(QStringLiteral("host")).toString();
-        creds[QStringLiteral("port")] = o.value(QStringLiteral("port")).toInt(993);
-        creds[QStringLiteral("user")] = o.value(QStringLiteral("user")).toString();
-        creds[QStringLiteral("pass")] = o.value(QStringLiteral("pass")).toString();
-        creds[QStringLiteral("tls")] = o.value(QStringLiteral("tls")).toBool(true);
-        const QString accountId = QStringLiteral("imap:")
-                                + creds[QStringLiteral("user")].toString()
-                                + QStringLiteral("@")
-                                + creds[QStringLiteral("host")].toString();
-
-        bool dup = false;
-        for (const auto &pair : backends) {
-            if (pair.first == accountId) { dup = true; break; }
-        }
-        if (!dup)
-            backends.append({accountId, makeImapBackend(creds)});
+        QFile in(QStringLiteral(":/icons/tabler/") + n + QStringLiteral(".svg"));
+        if (!in.open(QIODevice::ReadOnly))
+            continue;
+        QFile out(dst);
+        if (out.open(QIODevice::WriteOnly))
+            out.write(in.readAll());
     }
+    return dir;
 }
 
 int main(int argc, char *argv[])
@@ -75,6 +57,30 @@ int main(int argc, char *argv[])
     qRegisterMetaType<QVector<AttachmentMeta>>("QVector<AttachmentMeta>");
     qRegisterMetaType<Message>("Message");
     qRegisterMetaType<QVector<Message>>("QVector<Message>");
+
+    // Backend class registry: type → factory. The controller creates
+    // instances through this and never names a concrete class. Adding a
+    // backend (e.g. Proton) = one registerType call here.
+    BackendRegistry::registerType(QStringLiteral("imap"),
+        [](const QVariantMap &creds) -> BackendPlugin * {
+            auto *backend = new ImapBackend();
+            backend->initialize({});
+            if (auto *c = dynamic_cast<ICredentialsSetup *>(backend))
+                c->configure(creds);
+            return backend;
+        });
+    BackendRegistry::registerType(QStringLiteral("mock"),
+        [](const QVariantMap &) -> BackendPlugin * {
+            auto *backend = new MockBackend();
+            backend->initialize({});
+            return backend;
+        });
+    BackendRegistry::registerType(QStringLiteral("deltachat"),
+        [](const QVariantMap &) -> BackendPlugin * {
+            auto *backend = new DeltaChatBackend();
+            backend->initialize({});
+            return backend;
+        });
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Aerogram"));
@@ -106,10 +112,29 @@ int main(int argc, char *argv[])
                        imapUserOpt, imapPassOpt, imapTlsOpt});
     parser.process(app);
 
-    QList<QPair<QString, BackendPlugin *>> backends;
+    // Account specs are (type, credentials) pairs; the controller
+    // constructs backends from them via the registry.
+    QList<QPair<QString, QVariantMap>> accountSpecs;
 
-    if (parser.isSet(accountsOpt))
-        loadAccountsFile(parser.value(accountsOpt), backends);
+    if (parser.isSet(accountsOpt)) {
+        QFile f(parser.value(accountsOpt));
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+            for (const QJsonValue &v : doc.array()) {
+                const QJsonObject o = v.toObject();
+                QVariantMap creds;
+                creds[QStringLiteral("type")] = o.value(QStringLiteral("type")).toString();
+                creds[QStringLiteral("host")] = o.value(QStringLiteral("host")).toString();
+                creds[QStringLiteral("port")] = o.value(QStringLiteral("port")).toInt(993);
+                creds[QStringLiteral("user")] = o.value(QStringLiteral("user")).toString();
+                creds[QStringLiteral("pass")] = o.value(QStringLiteral("pass")).toString();
+                creds[QStringLiteral("tls")] = o.value(QStringLiteral("tls")).toBool(true);
+                accountSpecs.append({creds[QStringLiteral("type")].toString(), creds});
+            }
+        } else {
+            qWarning().noquote() << "Cannot open accounts file:" << parser.value(accountsOpt);
+        }
+    }
 
     if (parser.isSet(backendOpt)) {
         const QString b = parser.value(backendOpt);
@@ -120,27 +145,13 @@ int main(int argc, char *argv[])
             creds[QStringLiteral("user")] = parser.value(imapUserOpt);
             creds[QStringLiteral("pass")] = parser.value(imapPassOpt);
             creds[QStringLiteral("tls")] = parser.isSet(imapTlsOpt);
-            const QString accountId = QStringLiteral("imap:")
-                                    + creds[QStringLiteral("user")].toString()
-                                    + QStringLiteral("@")
-                                    + creds[QStringLiteral("host")].toString();
-            backends.append({accountId, makeImapBackend(creds)});
-        } else if (b == QLatin1String("mock")) {
-            auto *mock = new MockBackend();
-            mock->initialize({});
-            backends.append({QStringLiteral("mock"), mock});
-        } else if (b == QLatin1String("deltachat")) {
-            auto *dc = new DeltaChatBackend();
-            dc->initialize({});
-            backends.append({QStringLiteral("deltachat"), dc});
+            accountSpecs.append({QStringLiteral("imap"), creds});
+        } else if (b == QLatin1String("mock") || b == QLatin1String("deltachat")) {
+            accountSpecs.append({b, {}});
         } else {
             qWarning().noquote() << "Unknown backend:" << b;
         }
     }
-
-    // Dialog-added accounts persist in the encrypted vault DB and load
-    // post-unlock (controller-driven). No plaintext accounts file is
-    // read at boot; a legacy accounts.json is migrated on first unlock.
 
     // The vault is always constructed and wired: plain launches with no
     // accounts boot into the first-run vault-creation form, and adding
@@ -150,7 +161,8 @@ int main(int argc, char *argv[])
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
         + QStringLiteral("/vault"));
 
-    AccountController controller(backends, &vault);
+    AccountController controller(accountSpecs, &vault);
+    controller.setIconPackDir(installIconPack());
 
     IpcServer ipc(&controller);
 
@@ -164,8 +176,10 @@ int main(int argc, char *argv[])
 
     // When the lock overlay shows, unlock/create drives startup via the
     // controller. Otherwise fetch immediately.
-    if (!controller.showLockOverlay())
+    if (!controller.showLockOverlay()) {
         controller.fetchConversations();
+        controller.ensureActiveAccount();
+    }
 
     return app.exec();
 }

@@ -1,5 +1,6 @@
 #include "controllers/AccountController.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -7,23 +8,38 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 
-#include "core/plugin/Capabilities.h"
-#include "core/crypto/AccountStore.h"
-#include "core/imap/ImapBackend.h"
+#include <algorithm>
 
-AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
+#include "core/crypto/AccountStore.h"
+#include "core/plugin/BackendRegistry.h"
+#include "core/plugin/Capabilities.h"
+
+/// \file AccountController.cpp
+/// No concrete backend class is named in this file: construction goes
+/// through BackendRegistry, vault key/store flows through the
+/// IMasterKeyAware capability, and UI grouping reads plugin->family().
+/// See ~/Documents/Aerogram/plans/backend-untangle/plan.md.
+
+AccountController::AccountController(const QList<QPair<QString, QVariantMap>> &accountSpecs,
                                      MasterKeyManager *vault,
                                      QObject *parent)
     : QObject(parent)
-    , m_backends(backends)
     , m_messageModel(new MessageListModel(this))
     , m_conversationModel(new ConversationListModel(this))
+    , m_accountsModel(new AccountListModel(this))
     , m_configStatus(QStringLiteral("Not configured"))
     , m_activeView(QStringLiteral("email"))
     , m_vault(vault)
 {
-    for (const auto &pair : m_backends)
-        connectBackend(pair.first, pair.second);
+    // Construction is registry-driven: specs are (type, credentials);
+    // the controller never constructs a concrete backend itself.
+    for (const auto &spec : accountSpecs) {
+        BackendPlugin *backend = BackendRegistry::create(spec.first, spec.second);
+        if (backend)
+            registerAccount(spec.first, spec.second, backend);
+        else
+            qWarning().noquote() << "Unknown backend type in account spec:" << spec.first;
+    }
 
     if (m_vault) {
         connect(m_vault, &MasterKeyManager::isLockedChanged, this, [this] {
@@ -39,71 +55,27 @@ AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>
     }
 }
 
-MessageListModel *AccountController::messageListModel() const
-{
-    return m_messageModel;
-}
+// ---------------------------------------------------------------------
+// Properties
+// ---------------------------------------------------------------------
 
-ConversationListModel *AccountController::conversationListModel() const
-{
-    return m_conversationModel;
-}
+MessageListModel *AccountController::messageListModel() const { return m_messageModel; }
+ConversationListModel *AccountController::conversationListModel() const { return m_conversationModel; }
+AccountListModel *AccountController::accountsModel() const { return m_accountsModel; }
+QString AccountController::iconPackDir() const { return m_iconPackDir; }
+void AccountController::setIconPackDir(const QString &dir) { m_iconPackDir = dir; }
+QString AccountController::configStatus() const { return m_configStatus; }
+QString AccountController::activeView() const { return m_activeView; }
+QString AccountController::activeAccountId() const { return m_activeAccountId; }
+QString AccountController::activeConversationId() const { return m_activeConversationId; }
+QString AccountController::activeMessageId() const { return m_activeMessageId; }
+QVariantMap AccountController::activeMessage() const { return m_activeMessage; }
+QString AccountController::activeMessageBody() const { return m_activeMessageBody; }
+QVariantList AccountController::activeMessageAttachments() const { return m_activeMessageAttachments; }
 
-QString AccountController::configStatus() const
-{
-    return m_configStatus;
-}
-
-QString AccountController::activeView() const
-{
-    return m_activeView;
-}
-
-QString AccountController::activeAccountId() const
-{
-    return m_activeAccountId;
-}
-
-QString AccountController::activeConversationId() const
-{
-    return m_activeConversationId;
-}
-
-QString AccountController::activeMessageId() const
-{
-    return m_activeMessageId;
-}
-
-QVariantMap AccountController::activeMessage() const
-{
-    return m_activeMessage;
-}
-
-QString AccountController::activeMessageBody() const
-{
-    return m_activeMessageBody;
-}
-
-QVariantList AccountController::activeMessageAttachments() const
-{
-    return m_activeMessageAttachments;
-}
-
-bool AccountController::isLocked() const
-{
-    return m_vault ? m_vault->isLocked() : false;
-}
-
-QString AccountController::lockStatusText() const
-{
-    return m_vault ? m_vault->statusText() : QString();
-}
-
-bool AccountController::vaultExists() const
-{
-    return m_vault ? m_vault->vaultExists() : false;
-}
-
+bool AccountController::isLocked() const { return m_vault ? m_vault->isLocked() : false; }
+QString AccountController::lockStatusText() const { return m_vault ? m_vault->statusText() : QString(); }
+bool AccountController::vaultExists() const { return m_vault ? m_vault->vaultExists() : false; }
 bool AccountController::vaultNeedsRecovery() const
 {
     return m_vault ? m_vault->vaultNeedsRecovery() : false;
@@ -111,29 +83,18 @@ bool AccountController::vaultNeedsRecovery() const
 
 bool AccountController::hasEncryptedBackend() const
 {
-    for (const auto &pair : m_backends) {
-        if (pair.first.startsWith(QLatin1String("imap:")))
+    for (const Account &a : m_accounts) {
+        if (dynamic_cast<IMasterKeyAware *>(a.backend))
             return true;
     }
     return false;
 }
 
-bool AccountController::hasNoAccounts() const
-{
-    return m_backends.isEmpty();
-}
+bool AccountController::hasNoAccounts() const { return m_accounts.isEmpty(); }
 
-/// \brief The lock overlay shows when the vault is locked AND there is
-///        something to protect or create: an existing vault, an
-///        encrypted backend, or no accounts at all (first launch).
 bool AccountController::showLockOverlay() const
 {
     return isLocked() && (vaultExists() || hasEncryptedBackend() || hasNoAccounts());
-}
-
-void AccountController::updateLockOverlayVisibility()
-{
-    emit lockOverlayVisibilityChanged();
 }
 
 // ---------------------------------------------------------------------
@@ -201,12 +162,75 @@ void AccountController::setActiveMessageAttachments(const QVariantList &attachme
 }
 
 // ---------------------------------------------------------------------
-// Backend wiring. Per-backend lambdas capture the accountId so incoming
-// local IDs get compounded ("<accountId>/<localId>") on the way in.
+// Account registry. Backends are created via BackendRegistry and held
+// through the BackendPlugin interface inside Account entities.
 // ---------------------------------------------------------------------
 
-void AccountController::connectBackend(const QString &accountId, BackendPlugin *backend)
+void AccountController::registerAccount(const QString &type, const QVariantMap &credentials,
+                                        BackendPlugin *backend)
 {
+    Account a;
+    a.type = type;
+    a.backend = backend;
+    a.credentials = credentials;
+
+    // Label: user@host when the credential shape has both (imap-like);
+    // otherwise the type name (deltachat/mock).
+    const QString user = credentials.value(QStringLiteral("user")).toString();
+    const QString host = credentials.value(QStringLiteral("host")).toString();
+    a.label = (!user.isEmpty() && !host.isEmpty()) ? user + QLatin1Char('@') + host : type;
+
+    // Sketch format: <backend_id>#<backend> — e.g. alice@gmail.com#imap
+    a.id = a.label + QLatin1Char('#') + type;
+
+    a.index = m_accounts.size();
+    // Color: deterministic per id (md5 — qHash is not stable across
+    // runs). Persisted on add so the rail color never drifts.
+    static const char *palette[] = {
+        "#4c9baf", "#7a5fb5", "#b5546e", "#5f8f4e", "#b58433", "#3f7fa5"
+    };
+    const QByteArray hash = QCryptographicHash::hash(a.id.toUtf8(), QCryptographicHash::Md5);
+    a.color = QString::fromLatin1(
+        palette[static_cast<unsigned char>(hash.at(0)) % (sizeof(palette) / sizeof(palette[0]))]);
+
+    m_accounts.append(a);
+    connectBackend(m_accounts.last());
+    rebuildAccountsModel();
+    emit backendsChanged();
+    updateLockOverlayVisibility();
+}
+
+Account *AccountController::accountById(const QString &accountId)
+{
+    for (auto &a : m_accounts) {
+        if (a.id == accountId)
+            return &a;
+    }
+    return nullptr;
+}
+
+/// \brief Resolve a compound conversationId ("<accountId>/<localId>")
+///        to its account, optionally returning the backend-local ID.
+///        Split at the FIRST '/': account ids never contain '/',
+///        folder names may.
+Account *AccountController::accountForConversation(const QString &compoundConversationId,
+                                                   QString *localId)
+{
+    const int slash = compoundConversationId.indexOf(QLatin1Char('/'));
+    if (slash < 0)
+        return nullptr;
+    if (localId)
+        *localId = compoundConversationId.mid(slash + 1);
+    return accountById(compoundConversationId.left(slash));
+}
+
+void AccountController::connectBackend(const Account &account)
+{
+    BackendPlugin *backend = account.backend;
+    const QString accountId = account.id;
+
+    // Per-account lambdas capture the accountId so incoming local IDs
+    // get compounded ("<accountId>/<localId>") on the way in.
     connect(backend, &BackendPlugin::conversationsReady, this,
             [this, accountId](const QVector<Conversation> &convs) {
                 QVector<Conversation> compounded;
@@ -270,8 +294,14 @@ void AccountController::connectBackend(const QString &accountId, BackendPlugin *
     connect(backend, &BackendPlugin::ioStarted, this,
             [this, accountId](bool ok, const QString &error) {
                 emit ioStarted(accountId, ok, error);
-                if (!ok)
-                    setConfigStatus(QStringLiteral("IO start failed: ") + error);
+                if (ok) {
+                    if (m_pendingAdds.remove(accountId))
+                        setConfigStatus(QStringLiteral("Account added: ") + accountId);
+                } else {
+                    m_pendingAdds.remove(accountId);
+                    setConfigStatus(QStringLiteral("Account failed to connect: ")
+                                    + accountId + QStringLiteral(" — ") + error);
+                }
             });
 
     connect(backend, &BackendPlugin::ioStopped, this,
@@ -280,30 +310,46 @@ void AccountController::connectBackend(const QString &accountId, BackendPlugin *
             });
 }
 
-/// \brief Resolve a compound conversationId to its backend, optionally
-///        returning the backend-local ID. Split at the FIRST '/':
-///        accountIds never contain '/', folder names may.
-BackendPlugin *AccountController::backendFor(const QString &compoundConversationId,
-                                             QString *localId) const
+/// \brief Rebuild the sidebar account rail from the account registry.
+///        Chips derive initials from the account label (user part for
+///        email-shaped labels); color comes from the persisted account
+///        color (assigned at registration).
+void AccountController::rebuildAccountsModel()
 {
-    const int slash = compoundConversationId.indexOf(QLatin1Char('/'));
-    if (slash < 0)
-        return nullptr;
-    const QString accountId = compoundConversationId.left(slash);
-    if (localId)
-        *localId = compoundConversationId.mid(slash + 1);
-    for (const auto &pair : m_backends) {
-        if (pair.first == accountId)
-            return pair.second;
+    QVector<AccountEntry> rows;
+    rows.reserve(m_accounts.size());
+    for (const Account &a : m_accounts) {
+        AccountEntry e;
+        e.accountId = a.id;
+        e.type = a.backend->family();   // backend-reported, no prefix sniffing
+        e.color = a.color;
+
+        QString base = a.label;
+        const int at = base.indexOf(QLatin1Char('@'));
+        if (at > 0) base = base.left(at);
+        base = base.left(2);
+        if (!base.isEmpty()) base[0] = base[0].toUpper();
+        e.chipText = base;
+
+        rows.append(e);
     }
-    return nullptr;
+
+    std::sort(rows.begin(), rows.end(), [](const AccountEntry &a, const AccountEntry &b) {
+        return a.type != b.type && a.type == QLatin1String("email");
+    });
+
+    m_accountsModel->setAccounts(rows);
 }
 
 void AccountController::rebuildMergedConversations()
 {
     QVector<Conversation> merged;
-    for (const auto &convs : m_conversationsByAccount)
+    for (const auto &convs : m_conversationsByAccount) {
+        if (!m_activeAccountId.isEmpty() && !convs.isEmpty()
+                && !convs.first().id.startsWith(m_activeAccountId + QStringLiteral("/")))
+            continue;
         merged += convs;
+    }
     m_conversationModel->setConversations(merged);
     emit conversationsChanged();
 
@@ -328,8 +374,8 @@ void AccountController::rebuildMergedConversations()
 
 void AccountController::fetchConversations()
 {
-    for (const auto &pair : m_backends) {
-        if (auto *p = dynamic_cast<IConversationProvider *>(pair.second))
+    for (const Account &a : m_accounts) {
+        if (auto *p = dynamic_cast<IConversationProvider *>(a.backend))
             p->fetchConversations();
     }
 }
@@ -338,8 +384,8 @@ void AccountController::fetchMessages(const QString &conversationId)
 {
     setActiveConversationId(conversationId);
     QString localId;
-    BackendPlugin *backend = backendFor(conversationId, &localId);
-    if (auto *p = dynamic_cast<IMessageProvider *>(backend)) {
+    Account *account = accountForConversation(conversationId, &localId);
+    if (auto *p = dynamic_cast<IMessageProvider *>(account ? account->backend : nullptr)) {
         p->fetchMessages(localId);
     } else {
         emit errorOccurred(QStringLiteral("No message provider for %1").arg(conversationId));
@@ -349,8 +395,8 @@ void AccountController::fetchMessages(const QString &conversationId)
 void AccountController::fetchMessageBody(const QString &conversationId, const QString &messageId)
 {
     QString localId;
-    BackendPlugin *backend = backendFor(conversationId, &localId);
-    if (auto *p = dynamic_cast<IMessageProvider *>(backend)) {
+    Account *account = accountForConversation(conversationId, &localId);
+    if (auto *p = dynamic_cast<IMessageProvider *>(account ? account->backend : nullptr)) {
         p->fetchMessageBody(localId, messageId);
     } else {
         emit errorOccurred(QStringLiteral("No message provider for %1").arg(conversationId));
@@ -390,8 +436,8 @@ void AccountController::selectMessage(const QString &messageId)
 void AccountController::saveAttachment(const QString &messageId, int partIndex,
                                        const QString &destinationPath)
 {
-    BackendPlugin *backend = backendFor(m_activeConversationId, nullptr);
-    if (auto *p = dynamic_cast<IMessageProvider *>(backend)) {
+    Account *account = accountForConversation(m_activeConversationId, nullptr);
+    if (auto *p = dynamic_cast<IMessageProvider *>(account ? account->backend : nullptr)) {
         p->saveAttachment(messageId, partIndex, destinationPath);
     } else {
         emit attachmentSaved(false, messageId, destinationPath);
@@ -401,8 +447,8 @@ void AccountController::saveAttachment(const QString &messageId, int partIndex,
 void AccountController::sendMessage(const QString &conversationId, const QString &text)
 {
     QString localId;
-    BackendPlugin *backend = backendFor(conversationId, &localId);
-    if (auto *p = dynamic_cast<IMessageSender *>(backend)) {
+    Account *account = accountForConversation(conversationId, &localId);
+    if (auto *p = dynamic_cast<IMessageSender *>(account ? account->backend : nullptr)) {
         p->sendMessage(localId, text);
     } else {
         emit errorOccurred(QStringLiteral("Backend for %1 cannot send messages")
@@ -410,66 +456,24 @@ void AccountController::sendMessage(const QString &conversationId, const QString
     }
 }
 
-void AccountController::setupFromQr(const QString &qrContent)
-{
-    setConfigStatus(QStringLiteral("Setting up account from QR..."));
-    for (const auto &pair : m_backends) {
-        if (auto *p = dynamic_cast<IQrSetup *>(pair.second)) {
-            p->setupFromQr(qrContent);
-            return;
-        }
-    }
-    emit errorOccurred(QStringLiteral("No backend supports QR setup"));
-}
-
-void AccountController::getBackupFromQr(const QString &qrText)
-{
-    setConfigStatus(QStringLiteral("Receiving backup from first device..."));
-    for (const auto &pair : m_backends) {
-        if (auto *p = dynamic_cast<IQrSetup *>(pair.second)) {
-            p->getBackupFromQr(qrText);
-            return;
-        }
-    }
-    emit errorOccurred(QStringLiteral("No backend supports QR backup"));
-}
-
-void AccountController::configureAccount(const QVariantMap &credentials)
-{
-    setConfigStatus(QStringLiteral("Configuring account..."));
-    for (const auto &pair : m_backends) {
-        if (auto *p = dynamic_cast<ICredentialsSetup *>(pair.second)) {
-            p->configure(credentials);
-            return;
-        }
-    }
-    emit errorOccurred(QStringLiteral("No backend supports credentials setup"));
-}
-
-/// \brief Add a new account at runtime (from the add-account dialog or
-///        IPC). Constructs, configures, registers, and starts the
-///        backend, then persists credentials to
-///        <AppConfigLocation>/accounts.json (0600) so the account
-///        survives relaunch without CLI flags.
+/// \brief Add a new account at runtime (dialog or IPC). The backend is
+///        created through BackendRegistry and persisted into the
+///        encrypted vault DB. Success is claimed only after IO
+///        verifies (see the ioStarted lambda in connectBackend).
 void AccountController::addAccount(const QVariantMap &credentials)
 {
     const QString type = credentials.value(QStringLiteral("type"),
                                            QStringLiteral("imap")).toString();
-    if (type != QLatin1String("imap")) {
-        emit errorOccurred(QStringLiteral("Unsupported account type: ") + type);
+
+    const QString user = credentials.value(QStringLiteral("user")).toString();
+    const QString host = credentials.value(QStringLiteral("host")).toString();
+    const QString accountId = (!user.isEmpty() && !host.isEmpty())
+                            ? user + QLatin1Char('@') + host + QLatin1Char('#') + type
+                            : type;
+
+    if (accountById(accountId)) {
+        setConfigStatus(QStringLiteral("Account already added: ") + accountId);
         return;
-    }
-
-    const QString accountId = QStringLiteral("imap:")
-                            + credentials.value(QStringLiteral("user")).toString()
-                            + QStringLiteral("@")
-                            + credentials.value(QStringLiteral("host")).toString();
-
-    for (const auto &pair : m_backends) {
-        if (pair.first == accountId) {
-            setConfigStatus(QStringLiteral("Account already added: ") + accountId);
-            return;
-        }
     }
 
     if (m_vault && m_vault->isLocked()) {
@@ -477,88 +481,80 @@ void AccountController::addAccount(const QVariantMap &credentials)
         return;
     }
 
-    // Prototype note: the controller constructing a concrete backend is
-    // a deliberate shortcut — a factory plugin registry is the eventual
-    // home for this (see docs/CLEANUP.md).
-    auto *backend = new ImapBackend(this);
-    backend->initialize({});
-    backend->configure(credentials);
-    if (m_vault && !m_vault->isLocked())
-        backend->setMasterKey(m_vault->key());
+    BackendPlugin *backend = BackendRegistry::create(type, credentials);
+    if (!backend) {
+        emit errorOccurred(QStringLiteral("Unsupported account type: ") + type);
+        return;
+    }
 
-    m_backends.append({accountId, backend});
-    connectBackend(accountId, backend);
+    registerAccount(type, credentials, backend);
 
-    // Persist into the encrypted vault DB (replaces accounts.json).
+    // Persist into the encrypted vault DB.
     if (m_vault && !m_vault->isLocked()) {
         AccountStore store(accountsDbPath(), m_vault->key());
         QString err;
-        QVariantMap toStore = credentials;
-        toStore.insert(QStringLiteral("type"), QStringLiteral("imap"));
-        if (!store.open(&err) || !store.add(toStore, &err))
+        if (!store.open(&err) || !store.add(credentials, &err))
             emit errorOccurred(QStringLiteral("Persist account failed: ") + err);
     }
 
     backend->startIo();
 
-    emit backendsChanged();
-    updateLockOverlayVisibility();
-    setConfigStatus(QStringLiteral("Account added: ") + accountId);
+    m_pendingAdds.insert(accountId);
+    setConfigStatus(QStringLiteral("Adding account ") + accountId
+                    + QStringLiteral("…"));
+    ensureActiveAccount();
 }
 
-/// \brief Remove an account: stop IO, unregister the backend, drop the
-///        persisted row. The on-disk store is kept (re-adding the
-///        account reuses it). CLI-provided accounts (--accounts) are
-///        only unregistered at runtime — they reappear from the file
-///        on next launch.
+/// \brief Remove an account: stop IO, unregister, drop the persisted
+///        row. The on-disk store is kept (re-adding reuses it).
+///        CLI-provided accounts are only unregistered at runtime.
 void AccountController::removeAccount(const QString &accountId)
 {
-    for (int i = 0; i < m_backends.size(); ++i) {
-        if (m_backends[i].first != accountId)
-            continue;
-
-        BackendPlugin *backend = m_backends[i].second;
-        if (auto *imap = qobject_cast<ImapBackend *>(backend))
-            imap->stopIo();
-        backend->shutdown();
-
-        m_backends.removeAt(i);
-        m_conversationsByAccount.remove(accountId);
-        rebuildMergedConversations();
-
-        if (accountId.startsWith(QLatin1String("imap:")) && m_vault && !m_vault->isLocked()) {
-            // accountId = imap:<user>@<host>; split on LAST '@' since
-            // user is often an email address containing '@'.
-            const QString userHost = accountId.mid(5);
-            const int at = userHost.lastIndexOf(QLatin1Char('@'));
-            if (at > 0) {
-                AccountStore store(accountsDbPath(), m_vault->key());
-                QString err;
-                if (store.open(&err)
-                        && !store.remove(QStringLiteral("imap"), userHost.left(at),
-                                         userHost.mid(at + 1), &err))
-                    emit errorOccurred(QStringLiteral("Remove persisted account failed: ") + err);
-            }
-        }
-
-        emit backendsChanged();
-        updateLockOverlayVisibility();
-        setConfigStatus(QStringLiteral("Account removed: ") + accountId);
+    Account *account = accountById(accountId);
+    if (!account) {
+        emit errorOccurred(QStringLiteral("No such account: ") + accountId);
         return;
     }
 
-    emit errorOccurred(QStringLiteral("No such account: ") + accountId);
+    account->backend->stopIo();
+    account->backend->shutdown();
+
+    for (int i = 0; i < m_accounts.size(); ++i) {
+        if (m_accounts[i].id == accountId) {
+            m_accounts.removeAt(i);
+            break;
+        }
+    }
+    m_conversationsByAccount.remove(accountId);
+    rebuildMergedConversations();
+    rebuildAccountsModel();
+    if (m_activeAccountId == accountId)
+        setActiveAccountId(QString());
+
+    if (m_vault && !m_vault->isLocked() && !account->label.isEmpty()
+            && account->label != account->type) {
+        // label is user@host; split on LAST '@' (user may be an email
+        // address containing '@').
+        const int at = account->label.lastIndexOf(QLatin1Char('@'));
+        if (at > 0) {
+            AccountStore store(accountsDbPath(), m_vault->key());
+            QString err;
+            if (store.open(&err)
+                    && !store.remove(account->type, account->label.left(at),
+                                     account->label.mid(at + 1), &err))
+                emit errorOccurred(QStringLiteral("Remove persisted account failed: ") + err);
+        }
+    }
+
+    emit backendsChanged();
+    updateLockOverlayVisibility();
+    setConfigStatus(QStringLiteral("Account removed: ") + accountId);
 }
 
-QString AccountController::accountsDbPath() const
-{
-    return m_vault ? m_vault->vaultDir() + QStringLiteral("/accounts.db") : QString();
-}
+// ---------------------------------------------------------------------
+// Vault flows
+// ---------------------------------------------------------------------
 
-/// \brief Shared post-unlock path — every successful vault entry point
-///        (create/unlock/recover) lands here: load persisted accounts,
-///        hand the data key to encrypted backends, start their IO,
-///        fetch conversations.
 void AccountController::onVaultUnlocked()
 {
     // Migrate first so imported rows are loaded in the same pass.
@@ -566,18 +562,19 @@ void AccountController::onVaultUnlocked()
     loadPersistedAccounts();
 
     const QByteArray key = m_vault->key();
-    for (const auto &pair : m_backends) {
-        if (auto *imap = qobject_cast<ImapBackend *>(pair.second)) {
-            imap->setMasterKey(key);
-            imap->startIo();
+    for (const Account &a : m_accounts) {
+        if (auto *aware = dynamic_cast<IMasterKeyAware *>(a.backend)) {
+            aware->setMasterKey(key);
+            a.backend->startIo();
         }
     }
     fetchConversations();
+    ensureActiveAccount();
 }
 
 /// \brief Construct + register backends from the vault's encrypted
-///        accounts table. Called post-unlock; IO start happens in the
-///        shared loop in onVaultUnlocked.
+///        accounts table (post-unlock). Construction goes through the
+///        registry like everything else.
 void AccountController::loadPersistedAccounts()
 {
     if (!m_vault)
@@ -592,31 +589,21 @@ void AccountController::loadPersistedAccounts()
 
     const auto rows = store.list();
     for (const QVariantMap &creds : rows) {
-        if (creds.value(QStringLiteral("type")).toString() != QLatin1String("imap"))
+        const QString type = creds.value(QStringLiteral("type")).toString();
+        const QString user = creds.value(QStringLiteral("user")).toString();
+        const QString host = creds.value(QStringLiteral("host")).toString();
+        const QString accountId = (!user.isEmpty() && !host.isEmpty())
+                                ? user + QLatin1Char('@') + host + QLatin1Char('#') + type
+                                : type;
+
+        if (accountById(accountId))
             continue;
 
-        const QString accountId = QStringLiteral("imap:")
-                                + creds.value(QStringLiteral("user")).toString()
-                                + QStringLiteral("@")
-                                + creds.value(QStringLiteral("host")).toString();
-
-        bool dup = false;
-        for (const auto &pair : m_backends) {
-            if (pair.first == accountId) { dup = true; break; }
-        }
-        if (dup)
-            continue;
-
-        auto *backend = new ImapBackend(this);
-        backend->initialize({});
-        backend->configure(creds);
-        m_backends.append({accountId, backend});
-        connectBackend(accountId, backend);
-    }
-
-    if (!rows.isEmpty()) {
-        emit backendsChanged();
-        updateLockOverlayVisibility();
+        BackendPlugin *backend = BackendRegistry::create(type, creds);
+        if (backend)
+            registerAccount(type, creds, backend);
+        else
+            qWarning().noquote() << "Unknown backend type in vault accounts table:" << type;
     }
 }
 
@@ -658,6 +645,11 @@ void AccountController::migrateLegacyAccountsJson()
 
     QFile::rename(legacy, legacy + QStringLiteral(".migrated"));
     qInfo() << "Migrated legacy accounts.json into the encrypted vault DB";
+}
+
+QString AccountController::accountsDbPath() const
+{
+    return m_vault ? m_vault->vaultDir() + QStringLiteral("/accounts.db") : QString();
 }
 
 void AccountController::unlockWithPassphrase(const QString &passphrase)
@@ -712,9 +704,9 @@ void AccountController::rotateVault(const QString &newPassword, const QString &n
 
     // Stop IO first so no in-flight worker writes with the old key
     // into the soon-to-be-wiped store.
-    for (const auto &pair : m_backends) {
-        if (auto *imap = qobject_cast<ImapBackend *>(pair.second))
-            imap->stopIo();
+    for (const Account &a : m_accounts) {
+        if (dynamic_cast<IMasterKeyAware *>(a.backend))
+            a.backend->stopIo();
     }
 
     if (!m_vault->rotate(newPassword, newPhrase, mode)) {
@@ -723,13 +715,49 @@ void AccountController::rotateVault(const QString &newPassword, const QString &n
     }
 
     const QByteArray key = m_vault->key();
-    for (const auto &pair : m_backends) {
-        if (auto *imap = qobject_cast<ImapBackend *>(pair.second)) {
-            imap->wipeLocalStore();
-            imap->setMasterKey(key);
-            imap->startIo();
+    for (const Account &a : m_accounts) {
+        if (auto *aware = dynamic_cast<IMasterKeyAware *>(a.backend)) {
+            aware->wipeLocalStore();
+            aware->setMasterKey(key);
+            a.backend->startIo();
         }
     }
+}
+
+void AccountController::setupFromQr(const QString &qrContent)
+{
+    setConfigStatus(QStringLiteral("Setting up account from QR..."));
+    for (const Account &a : m_accounts) {
+        if (auto *p = dynamic_cast<IQrSetup *>(a.backend)) {
+            p->setupFromQr(qrContent);
+            return;
+        }
+    }
+    emit errorOccurred(QStringLiteral("No backend supports QR setup"));
+}
+
+void AccountController::getBackupFromQr(const QString &qrText)
+{
+    setConfigStatus(QStringLiteral("Receiving backup from first device..."));
+    for (const Account &a : m_accounts) {
+        if (auto *p = dynamic_cast<IQrSetup *>(a.backend)) {
+            p->getBackupFromQr(qrText);
+            return;
+        }
+    }
+    emit errorOccurred(QStringLiteral("No backend supports QR backup"));
+}
+
+void AccountController::configureAccount(const QVariantMap &credentials)
+{
+    setConfigStatus(QStringLiteral("Configuring account..."));
+    for (const Account &a : m_accounts) {
+        if (auto *p = dynamic_cast<ICredentialsSetup *>(a.backend)) {
+            p->configure(credentials);
+            return;
+        }
+    }
+    emit errorOccurred(QStringLiteral("No backend supports credentials setup"));
 }
 
 void AccountController::triggerSync()
@@ -739,11 +767,11 @@ void AccountController::triggerSync()
 
 void AccountController::resetApp()
 {
-    // NOTE: IMAP backends lose their configured credentials here;
+    // NOTE: encrypted backends lose their configured credentials here;
     // restart is required for them. DeltaChat re-initializes fine.
-    for (const auto &pair : m_backends) {
-        pair.second->shutdown();
-        pair.second->initialize({});
+    for (const Account &a : m_accounts) {
+        a.backend->shutdown();
+        a.backend->initialize({});
     }
     m_messageModel->setMessages({});
     m_conversationModel->setConversations({});
@@ -760,7 +788,40 @@ void AccountController::resetApp()
     fetchConversations();
 }
 
+/// \brief Select an account from the sidebar rail. Email accounts jump
+///        straight to their INBOX (no folder picker this phase); chat
+///        accounts switch to the chats view filtered to that backend.
+///        The account's family comes from plugin->family() — no
+///        prefix sniffing.
 void AccountController::selectAccount(const QString &accountId)
 {
     setActiveAccountId(accountId);
+    rebuildMergedConversations();
+
+    Account *account = accountById(accountId);
+    const bool isChat = account ? account->backend->family() == QLatin1String("chat")
+                                : false;
+    setActiveView(isChat ? QStringLiteral("chats") : QStringLiteral("email"));
+
+    if (isChat) {
+        if (auto *p = dynamic_cast<IConversationProvider *>(account ? account->backend : nullptr))
+            p->fetchConversations();
+    } else {
+        fetchMessages(accountId + QStringLiteral("/INBOX"));
+    }
+}
+
+/// \brief Auto-select the first account when nothing is selected.
+///        Called after accounts load (unlock path, addAccount) and from
+///        main() on non-locked startups.
+void AccountController::ensureActiveAccount()
+{
+    if (!m_activeAccountId.isEmpty() || m_accounts.isEmpty())
+        return;
+    selectAccount(m_accounts.first().id);
+}
+
+void AccountController::updateLockOverlayVisibility()
+{
+    emit lockOverlayVisibilityChanged();
 }

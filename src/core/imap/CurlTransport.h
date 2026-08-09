@@ -34,7 +34,9 @@ public:
     bool listFolders(QStringList &folders, QString *err)
     {
         QByteArray resp;
-        if (!perform(QString(), QStringLiteral("LIST \"\" *"), resp, err))
+        // Credential/connectivity verification: fail fast. 15s total
+        // (connect 10s) — a dead host must not stall the UI for a minute.
+        if (!perform(QString(), QStringLiteral("LIST \"\" *"), resp, err, 15))
             return false;
 
         const auto lines = resp.split('\n');
@@ -126,7 +128,7 @@ private:
     }
 
     bool perform(const QString &folder, const QString &request,
-                 QByteArray &respOut, QString *err)
+                 QByteArray &respOut, QString *err, long timeoutSecs = 60)
     {
         CURL *curl = curl_easy_init();
         if (!curl) {
@@ -149,7 +151,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &CurlTransport::writeCb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respOut);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeoutSecs);
         if (!request.isEmpty())
             curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request.toUtf8().constData());
 

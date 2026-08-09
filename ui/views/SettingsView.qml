@@ -9,6 +9,7 @@ Kirigami.ScrollablePage {
 
     signal setupFromQrRequested(string qrContent)
     signal getBackupFromQrRequested(string qrText)
+    signal resetApplicationRequested()
 
     ColumnLayout {
         anchors.fill: parent
@@ -92,6 +93,24 @@ Kirigami.ScrollablePage {
             text: accountController.configStatus
             color: Kirigami.Theme.disabledTextColor
             font.pixelSize: 12
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.minimumHeight: 1
+            color: Kirigami.Theme.disabledTextColor
+            opacity: 0.3
+        }
+
+        Label {
+            text: "Danger zone"
+            font.bold: true
+            font.pixelSize: 14
+        }
+
+        Button {
+            text: "Reset application"
+            onClicked: settingsView.resetApplicationRequested()
         }
     }
 }

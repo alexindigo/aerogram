@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
 import org.kde.kirigami as Kirigami
+import Aerogram
 
 Kirigami.Page {
     id: inboxView
@@ -16,7 +17,7 @@ Kirigami.Page {
         spacing: 0
 
         // ---------------------------------------------------------
-        // Left: message list
+        // Left: message list (sender identity block per row)
         // ---------------------------------------------------------
         ListView {
             id: messageList
@@ -27,56 +28,73 @@ Kirigami.Page {
             clip: true
 
             delegate: Kirigami.AbstractCard {
-                contentItem: ColumnLayout {
-                    spacing: 4
+                contentItem: RowLayout {
+                    spacing: 10
 
-                    RowLayout {
-                        spacing: 8
+                    IdentityBlock {
+                        sender: model.sender
+                        Layout.alignment: Qt.AlignTop
+                    }
+
+                    ColumnLayout {
+                        spacing: 3
                         Layout.fillWidth: true
 
-                        Kirigami.Icon {
-                            source: model.isUnread ? "mail-mark-unread" : "mail-read"
-                            implicitWidth: 20
-                            implicitHeight: 20
-                        }
-
-                        Label {
-                            text: model.sender
-                            font.bold: model.isUnread
-                            font.pixelSize: 14
+                        RowLayout {
                             Layout.fillWidth: true
-                            elide: Text.ElideRight
-                        }
+                            spacing: 8
 
-                        Kirigami.Icon {
-                            source: "mail-attachment"
-                            implicitWidth: 16
-                            implicitHeight: 16
-                            visible: model.hasAttachments
+                            Label {
+                                text: model.sender
+                                font.bold: model.isUnread
+                                font.pixelSize: 13
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                            }
+
+                            Label {
+                                text: Qt.formatDateTime(model.date, "MMM d")
+                                font.pixelSize: 11
+                                color: Kirigami.Theme.disabledTextColor
+                            }
                         }
 
                         Label {
-                            text: Qt.formatDateTime(model.date, "MMM d")
-                            font.pixelSize: 12
-                            color: Kirigami.Theme.disabledTextColor
+                            text: model.subject
+                            font.bold: model.isUnread
+                            font.pixelSize: 13
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
                         }
-                    }
 
-                    Label {
-                        text: model.subject
-                        font.bold: model.isUnread
-                        font.pixelSize: 13
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
-                    }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
 
-                    Label {
-                        text: model.snippet
-                        font.pixelSize: 12
-                        color: Kirigami.Theme.disabledTextColor
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
-                        maximumLineCount: 1
+                            Rectangle {
+                                width: 7
+                                height: 7
+                                radius: 4
+                                color: Kirigami.Theme.highlightColor
+                                visible: model.isUnread
+                            }
+
+                            Label {
+                                text: model.snippet
+                                font.pixelSize: 12
+                                color: Kirigami.Theme.disabledTextColor
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                maximumLineCount: 1
+                            }
+
+                            AeroIcon {
+                                name: "paperclip"
+                                implicitWidth: 14
+                                implicitHeight: 14
+                                visible: model.hasAttachments
+                            }
+                        }
                     }
                 }
 
@@ -99,7 +117,8 @@ Kirigami.Page {
         }
 
         // ---------------------------------------------------------
-        // Right: reading pane
+        // Right: reading pane (sticky header, scrolling body, sticky
+        // attachment chips at the bottom)
         // ---------------------------------------------------------
         Item {
             Layout.fillWidth: true
@@ -117,22 +136,22 @@ Kirigami.Page {
                 spacing: 8
                 visible: accountController.activeMessageId.length > 0
 
-                Label {
-                    text: accountController.activeMessage.subject || ""
-                    font.bold: true
-                    font.pixelSize: 16
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
-                }
-
+                // -- sticky header --
                 RowLayout {
                     Layout.fillWidth: true
+                    spacing: 10
+
+                    IdentityBlock {
+                        sender: accountController.activeMessage.sender || ""
+                    }
+
                     Label {
                         text: accountController.activeMessage.sender || ""
                         font.pixelSize: 13
                         Layout.fillWidth: true
                         elide: Text.ElideRight
                     }
+
                     Label {
                         text: accountController.activeMessage.date
                               ? Qt.formatDateTime(accountController.activeMessage.date,
@@ -143,6 +162,14 @@ Kirigami.Page {
                     }
                 }
 
+                Label {
+                    text: accountController.activeMessage.subject || ""
+                    font.bold: true
+                    font.pixelSize: 16
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.minimumHeight: 1
@@ -150,6 +177,7 @@ Kirigami.Page {
                     opacity: 0.3
                 }
 
+                // -- scrolling body --
                 ScrollView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -162,49 +190,52 @@ Kirigami.Page {
                     }
                 }
 
-                // Attachments
-                ColumnLayout {
+                // -- sticky attachment chips bar (only when present) --
+                Rectangle {
+                    visible: attachmentBar.visible
                     Layout.fillWidth: true
+                    Layout.minimumHeight: 1
+                    color: Kirigami.Theme.disabledTextColor
+                    opacity: 0.3
+                }
+
+                Flow {
+                    id: attachmentBar
                     visible: accountController.activeMessageAttachments.length > 0
-                    spacing: 4
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.minimumHeight: 1
-                        color: Kirigami.Theme.disabledTextColor
-                        opacity: 0.3
-                    }
-
-                    Label {
-                        text: "Attachments"
-                        font.bold: true
-                        font.pixelSize: 12
-                    }
+                    Layout.fillWidth: true
+                    spacing: 8
 
                     Repeater {
                         model: accountController.activeMessageAttachments
 
-                        delegate: RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
+                        delegate: Rectangle {
+                            height: 30
+                            width: chipRow.implicitWidth + 20
+                            radius: 15
+                            color: Kirigami.Theme.alternateBackgroundColor
+                            border.width: 1
+                            border.color: Kirigami.Theme.disabledTextColor
 
-                            Kirigami.Icon {
-                                source: "mail-attachment"
-                                implicitWidth: 16
-                                implicitHeight: 16
+                            RowLayout {
+                                id: chipRow
+                                anchors.centerIn: parent
+                                spacing: 6
+
+                                AeroIcon {
+                                    name: "paperclip"
+                                    implicitWidth: 14
+                                    implicitHeight: 14
+                                }
+
+                                Label {
+                                    text: modelData.filename + "  " +
+                                          Math.max(1, Math.round(modelData.size / 1024)) + " KB"
+                                    font.pixelSize: 11
+                                }
                             }
 
-                            Label {
-                                text: modelData.filename + "  (" +
-                                      Math.max(1, Math.round(modelData.size / 1024)) + " KB)"
-                                font.pixelSize: 12
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
-                            }
-
-                            Button {
-                                text: "Save"
-                                flat: true
+                            MouseArea {
+                                anchors.fill: parent
                                 onClicked: {
                                     saveDialog.pendingIndex = modelData.index
                                     saveDialog.currentFile = modelData.filename

@@ -7,6 +7,7 @@
 #include <QByteArray>
 #include <QDebug>
 #include <QFile>
+#include <QSet>
 #include <QString>
 #include <QVariantMap>
 #include <QVector>
@@ -58,15 +59,24 @@ public:
         if (!exec("SELECT count(*) FROM sqlite_master;", err))
             return false;
 
-        return exec("CREATE TABLE IF NOT EXISTS accounts ("
-                    "  type TEXT NOT NULL,"
-                    "  host TEXT NOT NULL,"
-                    "  port INTEGER NOT NULL DEFAULT 993,"
-                    "  user TEXT NOT NULL,"
-                    "  pass TEXT DEFAULT '',"
-                    "  tls INTEGER NOT NULL DEFAULT 1,"
-                    "  PRIMARY KEY (type, user, host)"
-                    ");", err);
+        if (!exec("CREATE TABLE IF NOT EXISTS accounts ("
+                  "  type TEXT NOT NULL,"
+                  "  host TEXT NOT NULL,"
+                  "  port INTEGER NOT NULL DEFAULT 993,"
+                  "  user TEXT NOT NULL,"
+                  "  pass TEXT DEFAULT '',"
+                  "  tls INTEGER NOT NULL DEFAULT 1,"
+                  "  label TEXT DEFAULT '',"
+                  "  color TEXT DEFAULT '',"
+                  "  idx INTEGER NOT NULL DEFAULT 0,"
+                  "  userpic TEXT DEFAULT '',"
+                  "  credentials TEXT DEFAULT '',"
+                  "  PRIMARY KEY (type, user, host)"
+                  ");", err))
+            return false;
+
+        migrateColumns();
+        return true;
     }
 
     QVector<QVariantMap> list()
@@ -74,7 +84,8 @@ public:
         QVector<QVariantMap> out;
         sqlite3_stmt *st = nullptr;
         if (sqlite3_prepare_v2(m_db,
-                "SELECT type, host, port, user, pass, tls FROM accounts ORDER BY user, host;",
+                "SELECT type, host, port, user, pass, tls, label, color, idx, userpic"
+                " FROM accounts ORDER BY idx, user, host;",
                 -1, &st, nullptr) != SQLITE_OK)
             return out;
 
@@ -86,6 +97,10 @@ public:
             c[QStringLiteral("user")] = columnText(st, 3);
             c[QStringLiteral("pass")] = columnText(st, 4);
             c[QStringLiteral("tls")] = sqlite3_column_int(st, 5) != 0;
+            c[QStringLiteral("label")] = columnText(st, 6);
+            c[QStringLiteral("color")] = columnText(st, 7);
+            c[QStringLiteral("idx")] = sqlite3_column_int(st, 8);
+            c[QStringLiteral("userpic")] = columnText(st, 9);
             out.append(c);
         }
         sqlite3_finalize(st);
@@ -96,8 +111,9 @@ public:
     {
         sqlite3_stmt *st = nullptr;
         if (sqlite3_prepare_v2(m_db,
-                "INSERT OR REPLACE INTO accounts (type, host, port, user, pass, tls)"
-                " VALUES (?, ?, ?, ?, ?, ?);", -1, &st, nullptr) != SQLITE_OK) {
+                "INSERT OR REPLACE INTO accounts"
+                " (type, host, port, user, pass, tls, label, color, idx, userpic, credentials)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", -1, &st, nullptr) != SQLITE_OK) {
             if (err) *err = QString::fromUtf8(sqlite3_errmsg(m_db));
             return false;
         }
@@ -107,6 +123,11 @@ public:
         bindText(st, 4, credentials.value(QStringLiteral("user")).toString());
         bindText(st, 5, credentials.value(QStringLiteral("pass")).toString());
         sqlite3_bind_int(st, 6, credentials.value(QStringLiteral("tls"), true).toBool() ? 1 : 0);
+        bindText(st, 7, credentials.value(QStringLiteral("label")).toString());
+        bindText(st, 8, credentials.value(QStringLiteral("color")).toString());
+        sqlite3_bind_int(st, 9, credentials.value(QStringLiteral("idx"), 0).toInt());
+        bindText(st, 10, credentials.value(QStringLiteral("userpic")).toString());
+        bindText(st, 11, credentials.value(QStringLiteral("credentials")).toString());
 
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         if (!ok && err)
@@ -152,6 +173,34 @@ public:
     }
 
 private:
+    /// \brief Schema drift: add any missing columns to a v1 accounts
+    ///        table (label/color/idx/userpic/credentials). SQLite has
+    ///        no IF NOT EXISTS for ADD COLUMN, so check table_info.
+    void migrateColumns()
+    {
+        QSet<QString> cols;
+        sqlite3_stmt *st = nullptr;
+        if (sqlite3_prepare_v2(m_db, "PRAGMA table_info(accounts);",
+                               -1, &st, nullptr) != SQLITE_OK)
+            return;
+        while (sqlite3_step(st) == SQLITE_ROW)
+            cols.insert(columnText(st, 1));
+        sqlite3_finalize(st);
+
+        const struct { const char *name; const char *def; } wanted[] = {
+            { "label",       "label TEXT DEFAULT ''" },
+            { "color",       "color TEXT DEFAULT ''" },
+            { "idx",         "idx INTEGER NOT NULL DEFAULT 0" },
+            { "userpic",     "userpic TEXT DEFAULT ''" },
+            { "credentials", "credentials TEXT DEFAULT ''" },
+        };
+        for (const auto &w : wanted) {
+            if (!cols.contains(QString::fromLatin1(w.name)))
+                exec(QStringLiteral("ALTER TABLE accounts ADD COLUMN %1")
+                         .arg(QString::fromLatin1(w.def)).toUtf8().constData());
+        }
+    }
+
     bool exec(const char *sql, QString *err = nullptr)
     {
         char *msg = nullptr;

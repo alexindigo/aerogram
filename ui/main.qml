@@ -18,12 +18,8 @@ Kirigami.ApplicationWindow {
 
         Sidebar {
             Layout.fillHeight: true
-            currentSection: accountController.activeView
 
-            onInboxRequested: accountController.setActiveView("email")
-            onChatsRequested: accountController.setActiveView("chats")
             onSettingsRequested: accountController.setActiveView("settings")
-            onResetApplicationRequested: accountController.resetApp()
             onAddAccountRequested: addAccountDialog.open()
         }
 
@@ -41,6 +37,7 @@ Kirigami.ApplicationWindow {
             ChatView {
                 onChatSelected: (conversationId) => {
                     accountController.fetchMessages(conversationId)
+                    accountController.setActiveView("email")
                 }
             }
 
@@ -51,6 +48,7 @@ Kirigami.ApplicationWindow {
                 onGetBackupFromQrRequested: (qrText) => {
                     accountController.getBackupFromQr(qrText)
                 }
+                onResetApplicationRequested: accountController.resetApp()
             }
         }
     }

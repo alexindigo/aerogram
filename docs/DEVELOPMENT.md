@@ -42,6 +42,9 @@ non-zero exit indicates an error.
 - Vault: `~/.local/share/Aerogram/vault/` (`wrap-salt.bin`,
   `secret-key.enc`, `keycheck.enc`, `accounts.db` — the encrypted
   accounts table; there is no plaintext accounts file)
+- Icon pack: `~/.local/share/Aerogram/icons/default/` (Tabler SVGs,
+  extracted from the bundle on first run; user-replaceable by design —
+  future: user packs as sibling dirs + a switcher)
 - IPC socket: `~/.cache/Aerogram/aerogram.ipc`
 
 Note: this system routes Qt logs to journald by default. Prefix runs

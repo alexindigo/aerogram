@@ -61,4 +61,16 @@ public:
     virtual void configure(const QVariantMap &credentials) = 0;
 };
 
+/// \brief Backends with encrypted-at-rest storage participate in the
+///        vault lifecycle through this capability: the controller hands
+///        the master key on unlock and drives store wipes on rotation
+///        — without knowing the concrete backend type.
+class IMasterKeyAware
+{
+public:
+    virtual ~IMasterKeyAware() = default;
+    virtual void setMasterKey(const QByteArray &key) = 0;
+    virtual void wipeLocalStore() = 0;
+};
+
 #endif

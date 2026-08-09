@@ -20,10 +20,14 @@ qt_add_executable(aerogram
     src/models/MessageListModel.cpp
     src/models/ConversationListModel.h
     src/models/ConversationListModel.cpp
+    src/models/AccountListModel.h
+    src/models/AccountListModel.cpp
     src/core/Types.h
+    src/core/Account.h
     src/core/crypto/MasterKeyManager.h
     src/core/crypto/AccountStore.h
     src/core/plugin/BackendPlugin.h
+    src/core/plugin/BackendRegistry.h
     src/core/plugin/Capabilities.h
     src/core/plugin/MockBackend.h
     src/core/plugin/DeltaChatBackend.h
@@ -46,6 +50,24 @@ qt_add_qml_module(aerogram
         ui/components/Sidebar.qml
         ui/components/AddAccountDialog.qml
         ui/components/LockOverlay.qml
+        ui/components/AeroIcon.qml
+        ui/components/IdentityBlock.qml
+)
+
+# Alias strips the assets/ path so resources resolve as
+# :/icons/tabler/<name>.svg.
+foreach(icon plus settings lock paperclip)
+    set_source_files_properties(assets/icons/tabler/${icon}.svg
+        PROPERTIES QT_RESOURCE_ALIAS ${icon}.svg)
+endforeach()
+
+qt_add_resources(aerogram "icons"
+    PREFIX "/icons/tabler"
+    FILES
+        assets/icons/tabler/plus.svg
+        assets/icons/tabler/settings.svg
+        assets/icons/tabler/lock.svg
+        assets/icons/tabler/paperclip.svg
 )
 
 target_include_directories(aerogram PRIVATE

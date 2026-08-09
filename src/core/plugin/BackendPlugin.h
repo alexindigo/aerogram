@@ -24,6 +24,11 @@ public:
 
     virtual QString name() const = 0;
 
+    /// \brief UI grouping family reported by the backend ("email" or
+    ///        "chat"). The sidebar rail groups accounts by this; no
+    ///        prefix-sniffing of account ids anywhere.
+    virtual QString family() const { return QStringLiteral("chat"); }
+
     virtual bool initialize(const QVariantMap &params = {}) = 0;
     virtual void shutdown() = 0;
     virtual void startIo() = 0;
