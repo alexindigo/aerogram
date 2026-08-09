@@ -3,6 +3,7 @@
 
 #include <QDateTime>
 #include <QDebug>
+#include <QFile>
 #include <QString>
 #include <QVector>
 
@@ -60,6 +61,9 @@ public:
         // file concurrently at unlock time; without a busy timeout the
         // loser of a schema-creation race gets SQLITE_BUSY immediately.
         sqlite3_busy_timeout(m_db, 5000);
+
+        // Owner-only, same convention as the vault files.
+        QFile::setPermissions(m_dbPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 
         // Verify the key (or plaintext state) with a probe query before
         // touching the schema.

@@ -3,15 +3,18 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
-// Full-window lock overlay shown while the vault is locked. Emits
-// domain-named signals only; main.qml wires them to controller slots.
-// Form selection is driven by controller booleans (vaultExists /
+// Full-window lock/welcome overlay. Emits domain-named signals only;
+// main.qml wires them to controller slots. Form selection is driven by
+// controller booleans (showLockOverlay / vaultExists /
 // vaultNeedsRecovery), never by parsing status strings.
+//
+// Layout follows the Aerogram Init sketch: welcome header, master
+// password field, secret phrase field (first run / recovery), Continue.
 Rectangle {
     id: lockOverlay
     anchors.fill: parent
     color: Kirigami.Theme.backgroundColor
-    visible: accountController.isLocked
+    visible: accountController.showLockOverlay
     z: 100
 
     signal createVaultRequested(string password, string phrase)
@@ -21,36 +24,30 @@ Rectangle {
     // Which form: first-run (no vault) / recovery (damaged) / daily.
     readonly property bool firstRun: !accountController.vaultExists
     readonly property bool recovery: accountController.vaultExists
-                                   && accountController.vaultNeedsRecovery
+                                   && (accountController.vaultNeedsRecovery || showRecovery)
 
-    // Local UI state (transient, allowed): confirm fields, the
-    // show-recovery toggle, and a local mismatch note.
+    // Local UI state (transient, allowed): the show-recovery toggle.
     property bool showRecovery: false
-    property string mismatchNote: ""
 
     ColumnLayout {
         anchors.centerIn: parent
         spacing: 16
         width: 340
 
-        Kirigami.Icon {
-            source: "lock"
-            implicitWidth: 48
-            implicitHeight: 48
-            Layout.alignment: Qt.AlignHCenter
-        }
-
         Label {
-            text: lockOverlay.firstRun ? "Create your vault"
-                : lockOverlay.showRecovery || lockOverlay.recovery ? "Recover your vault"
-                : "Aerogram is locked"
+            text: lockOverlay.firstRun ? "Welcome to Aerogram"
+                : lockOverlay.recovery ? "Vault recovery"
+                : "Welcome back"
             font.pixelSize: 20
             font.bold: true
             Layout.alignment: Qt.AlignHCenter
         }
 
         Label {
-            text: accountController.lockStatusText
+            visible: text.length > 0
+            text: lockOverlay.firstRun
+                ? "Three or more words you'll remember for the Secret Key. Store it in your password manager."
+                : accountController.lockStatusText
             color: Kirigami.Theme.disabledTextColor
             Layout.alignment: Qt.AlignHCenter
             wrapMode: Text.Wrap
@@ -58,91 +55,47 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
         }
 
-        // ---- master password ----
         TextField {
             id: passInput
             Layout.fillWidth: true
-            placeholderText: "Master password"
+            placeholderText: "master password"
             echoMode: TextInput.Password
+            onAccepted: continueButton.clicked()
         }
 
-        TextField {
-            id: passConfirm
-            Layout.fillWidth: true
-            placeholderText: "Confirm master password"
-            echoMode: TextInput.Password
-            visible: lockOverlay.firstRun
-        }
-
-        // ---- secret key phrase (first-run + recovery) ----
         TextField {
             id: phraseInput
             Layout.fillWidth: true
-            placeholderText: "Secret Key phrase"
-            visible: lockOverlay.firstRun || lockOverlay.showRecovery || lockOverlay.recovery
-        }
-
-        TextField {
-            id: phraseConfirm
-            Layout.fillWidth: true
-            placeholderText: "Confirm Secret Key phrase"
-            visible: lockOverlay.firstRun
-        }
-
-        Label {
-            visible: lockOverlay.firstRun
-            text: "Three or more words you'll remember. Store it in your password manager."
-            font.pixelSize: 11
-            color: Kirigami.Theme.disabledTextColor
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
-        }
-
-        Label {
-            visible: lockOverlay.mismatchNote.length > 0
-            text: lockOverlay.mismatchNote
-            color: Kirigami.Theme.negativeTextColor
-            font.pixelSize: 11
-            Layout.alignment: Qt.AlignHCenter
+            placeholderText: "secret phrase"
+            visible: lockOverlay.firstRun || lockOverlay.recovery
+            onAccepted: continueButton.clicked()
         }
 
         Button {
-            id: primaryButton
+            id: continueButton
             Layout.fillWidth: true
-            text: lockOverlay.firstRun ? "Create vault"
-                : lockOverlay.showRecovery || lockOverlay.recovery ? "Recover"
-                : "Unlock"
+            text: "Continue"
             enabled: passInput.text.length > 0
+                  && (!lockOverlay.firstRun && !lockOverlay.recovery
+                      || phraseInput.text.length > 0)
             onClicked: {
-                lockOverlay.mismatchNote = ""
-
                 if (lockOverlay.firstRun) {
-                    if (passInput.text !== passConfirm.text) {
-                        lockOverlay.mismatchNote = "Passwords don't match"
-                        return
-                    }
-                    if (phraseInput.text !== phraseConfirm.text) {
-                        lockOverlay.mismatchNote = "Secret Key phrases don't match"
-                        return
-                    }
                     lockOverlay.createVaultRequested(passInput.text, phraseInput.text)
-                } else if (lockOverlay.showRecovery || lockOverlay.recovery) {
+                } else if (lockOverlay.recovery) {
                     lockOverlay.recoveryRequested(passInput.text, phraseInput.text)
                 } else {
                     lockOverlay.unlockRequested(passInput.text)
                 }
 
                 passInput.clear()
-                passConfirm.clear()
                 phraseInput.clear()
-                phraseConfirm.clear()
             }
         }
 
         // Recovery link — daily form only, when the vault isn't already
         // known to be damaged.
         Label {
-            visible: !lockOverlay.firstRun && !lockOverlay.recovery
+            visible: !lockOverlay.firstRun && !accountController.vaultNeedsRecovery
             text: lockOverlay.showRecovery
                 ? '<a href="#back">Back to unlock</a>'
                 : '<a href="#recover">Vault damaged? Recover with Secret Key</a>'

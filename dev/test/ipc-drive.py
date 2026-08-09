@@ -13,7 +13,8 @@ import os
 import socket
 import sys
 
-SOCK = "/home/user/.cache/Aerogram/aerogram.ipc"
+SOCK = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+                    "Aerogram/aerogram.ipc")
 ATTACH_OUT = "/tmp/aerogram-attachment-test.txt"
 
 

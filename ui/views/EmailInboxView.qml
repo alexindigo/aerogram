@@ -86,7 +86,7 @@ Kirigami.Page {
             Kirigami.PlaceholderMessage {
                 anchors.centerIn: parent
                 visible: messageList.count === 0
-                text: "No emails yet"
+                text: "No messages"
             }
         }
 
@@ -108,7 +108,7 @@ Kirigami.Page {
             Kirigami.PlaceholderMessage {
                 anchors.centerIn: parent
                 visible: accountController.activeMessageId.length === 0
-                text: "Select a message to read"
+                text: "Inbox zero"
             }
 
             ColumnLayout {

@@ -68,6 +68,7 @@ public:
 
     bool isLocked() const { return m_locked; }
     QString statusText() const { return m_statusText; }
+    QString vaultDir() const { return m_vaultDir; }
 
     /// \brief keycheck.enc exists → a vault exists (even if damaged).
     bool vaultExists() const { return QFile::exists(keycheckPath()); }

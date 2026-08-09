@@ -33,6 +33,9 @@ class AccountController : public QObject
     Q_PROPERTY(QString lockStatusText READ lockStatusText NOTIFY lockStatusTextChanged)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
     Q_PROPERTY(bool vaultNeedsRecovery READ vaultNeedsRecovery NOTIFY vaultStateChanged)
+    Q_PROPERTY(bool hasEncryptedBackend READ hasEncryptedBackend NOTIFY backendsChanged)
+    Q_PROPERTY(bool hasNoAccounts READ hasNoAccounts NOTIFY backendsChanged)
+    Q_PROPERTY(bool showLockOverlay READ showLockOverlay NOTIFY lockOverlayVisibilityChanged)
 
 public:
     explicit AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
@@ -53,6 +56,9 @@ public:
     QString lockStatusText() const;
     bool vaultExists() const;
     bool vaultNeedsRecovery() const;
+    bool hasEncryptedBackend() const;
+    bool hasNoAccounts() const;
+    bool showLockOverlay() const;
 
 public slots:
     void fetchConversations();
@@ -63,6 +69,7 @@ public slots:
                         const QString &destinationPath);
     void sendMessage(const QString &conversationId, const QString &text);
     void addAccount(const QVariantMap &credentials);
+    void removeAccount(const QString &accountId);
     void unlockWithPassphrase(const QString &passphrase);
     void createVault(const QString &password, const QString &phrase);
     void recoverVault(const QString &password, const QString &phrase);
@@ -89,6 +96,8 @@ signals:
     void isLockedChanged();
     void lockStatusTextChanged();
     void vaultStateChanged();
+    void backendsChanged();
+    void lockOverlayVisibilityChanged();
     void messageSent(bool ok, const QString &conversationId);
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body);
@@ -110,8 +119,11 @@ private:
     BackendPlugin *backendFor(const QString &compoundConversationId,
                               QString *localId = nullptr) const;
     void rebuildMergedConversations();
-    void persistAccount(const QVariantMap &credentials);
+    void loadPersistedAccounts();
+    void migrateLegacyAccountsJson();
+    QString accountsDbPath() const;
     void onVaultUnlocked();
+    void updateLockOverlayVisibility();
 
     QList<QPair<QString, BackendPlugin *>> m_backends;
     QMap<QString, QVector<Conversation>> m_conversationsByAccount;

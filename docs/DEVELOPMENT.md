@@ -13,6 +13,15 @@ cmake --build build
 ./build/aerogram
 ```
 
+Plain launch with no accounts anywhere boots into the **first-run
+vault form** (master password + Secret Key phrase). Add accounts with
+the **+** button (bottom of the sidebar). Daily launches with an
+existing vault show the password-only unlock.
+
+Backends are explicit: `--backend=deltachat|mock|imap`,
+`--accounts=<file>`, or persisted accounts from the config file. No
+backend starts by default.
+
 Or headless (no display required — useful for smoke testing that the
 QML and C++ layers load without errors):
 
@@ -31,7 +40,8 @@ non-zero exit indicates an error.
   (per-account **SQLCipher-encrypted** `index.db` + sharded
   **encrypted** `storage/<hh>/<hh>/<sha>.enc`)
 - Vault: `~/.local/share/Aerogram/vault/` (`wrap-salt.bin`,
-  `secret-key.enc`, `keycheck.enc`)
+  `secret-key.enc`, `keycheck.enc`, `accounts.db` — the encrypted
+  accounts table; there is no plaintext accounts file)
 - IPC socket: `~/.cache/Aerogram/aerogram.ipc`
 
 Note: this system routes Qt logs to journald by default. Prefix runs
@@ -115,8 +125,13 @@ start syncing immediately and persist to
 `~/.config/Aerogram/accounts.json` (0600, owner-only) so they auto-load
 on every later launch — no CLI flags, nothing in shell history.
 
-Accounts from the CLI (`--accounts` / `--imap-*`) and the persisted
-file are merged with dedup by `imap:user@host`.
+Accounts from the CLI (`--accounts` / `--imap-*`) are runtime-only and
+never persisted; accounts added via the **+** dialog persist into the
+encrypted vault DB (`vault/accounts.db`) and auto-load post-unlock.
+`removeAccount` drops both the runtime backend and the persisted row
+(the on-disk store is kept; re-adding reuses it). A legacy plaintext
+`accounts.json` is imported into the vault DB once at first unlock and
+renamed to `accounts.json.migrated`.
 
 ### Encryption at rest + lock screen
 

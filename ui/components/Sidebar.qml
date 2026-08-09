@@ -22,13 +22,7 @@ Rectangle {
         spacing: 15
 
         Button {
-            text: "+"
-            flat: true
-            onClicked: sidebar.addAccountRequested()
-        }
-
-        Button {
-            text: "\u2709"
+            text: "\\u2709"
             flat: true
             highlighted: sidebar.currentSection === "email"
             onClicked: sidebar.inboxRequested()
@@ -44,7 +38,13 @@ Rectangle {
         Item { Layout.fillHeight: true }
 
         Button {
-            text: "\u2699"
+            text: "+"
+            flat: true
+            onClicked: sidebar.addAccountRequested()
+        }
+
+        Button {
+            text: "⚙"
             flat: true
             highlighted: sidebar.currentSection === "settings"
             onClicked: sidebar.settingsRequested()

@@ -22,6 +22,7 @@ qt_add_executable(aerogram
     src/models/ConversationListModel.cpp
     src/core/Types.h
     src/core/crypto/MasterKeyManager.h
+    src/core/crypto/AccountStore.h
     src/core/plugin/BackendPlugin.h
     src/core/plugin/Capabilities.h
     src/core/plugin/MockBackend.h

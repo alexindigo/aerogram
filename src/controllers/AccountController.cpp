@@ -8,6 +8,7 @@
 #include <QStandardPaths>
 
 #include "core/plugin/Capabilities.h"
+#include "core/crypto/AccountStore.h"
 #include "core/imap/ImapBackend.h"
 
 AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>> &backends,
@@ -18,19 +19,23 @@ AccountController::AccountController(const QList<QPair<QString, BackendPlugin *>
     , m_messageModel(new MessageListModel(this))
     , m_conversationModel(new ConversationListModel(this))
     , m_configStatus(QStringLiteral("Not configured"))
-    , m_activeView(QStringLiteral("settings"))
+    , m_activeView(QStringLiteral("email"))
     , m_vault(vault)
 {
     for (const auto &pair : m_backends)
         connectBackend(pair.first, pair.second);
 
     if (m_vault) {
-        connect(m_vault, &MasterKeyManager::isLockedChanged,
-                this, &AccountController::isLockedChanged);
+        connect(m_vault, &MasterKeyManager::isLockedChanged, this, [this] {
+            emit isLockedChanged();
+            updateLockOverlayVisibility();
+        });
         connect(m_vault, &MasterKeyManager::statusTextChanged,
                 this, &AccountController::lockStatusTextChanged);
-        connect(m_vault, &MasterKeyManager::vaultStateChanged,
-                this, &AccountController::vaultStateChanged);
+        connect(m_vault, &MasterKeyManager::vaultStateChanged, this, [this] {
+            emit vaultStateChanged();
+            updateLockOverlayVisibility();
+        });
     }
 }
 
@@ -102,6 +107,33 @@ bool AccountController::vaultExists() const
 bool AccountController::vaultNeedsRecovery() const
 {
     return m_vault ? m_vault->vaultNeedsRecovery() : false;
+}
+
+bool AccountController::hasEncryptedBackend() const
+{
+    for (const auto &pair : m_backends) {
+        if (pair.first.startsWith(QLatin1String("imap:")))
+            return true;
+    }
+    return false;
+}
+
+bool AccountController::hasNoAccounts() const
+{
+    return m_backends.isEmpty();
+}
+
+/// \brief The lock overlay shows when the vault is locked AND there is
+///        something to protect or create: an existing vault, an
+///        encrypted backend, or no accounts at all (first launch).
+bool AccountController::showLockOverlay() const
+{
+    return isLocked() && (vaultExists() || hasEncryptedBackend() || hasNoAccounts());
+}
+
+void AccountController::updateLockOverlayVisibility()
+{
+    emit lockOverlayVisibilityChanged();
 }
 
 // ---------------------------------------------------------------------
@@ -456,43 +488,83 @@ void AccountController::addAccount(const QVariantMap &credentials)
 
     m_backends.append({accountId, backend});
     connectBackend(accountId, backend);
-    persistAccount(credentials);
+
+    // Persist into the encrypted vault DB (replaces accounts.json).
+    if (m_vault && !m_vault->isLocked()) {
+        AccountStore store(accountsDbPath(), m_vault->key());
+        QString err;
+        QVariantMap toStore = credentials;
+        toStore.insert(QStringLiteral("type"), QStringLiteral("imap"));
+        if (!store.open(&err) || !store.add(toStore, &err))
+            emit errorOccurred(QStringLiteral("Persist account failed: ") + err);
+    }
+
     backend->startIo();
 
+    emit backendsChanged();
+    updateLockOverlayVisibility();
     setConfigStatus(QStringLiteral("Account added: ") + accountId);
 }
 
-void AccountController::persistAccount(const QVariantMap &credentials)
+/// \brief Remove an account: stop IO, unregister the backend, drop the
+///        persisted row. The on-disk store is kept (re-adding the
+///        account reuses it). CLI-provided accounts (--accounts) are
+///        only unregistered at runtime — they reappear from the file
+///        on next launch.
+void AccountController::removeAccount(const QString &accountId)
 {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(dir);
-    const QString path = dir + QStringLiteral("/accounts.json");
+    for (int i = 0; i < m_backends.size(); ++i) {
+        if (m_backends[i].first != accountId)
+            continue;
 
-    QJsonArray arr;
-    QFile in(path);
-    if (in.open(QIODevice::ReadOnly)) {
-        arr = QJsonDocument::fromJson(in.readAll()).array();
-        in.close();
+        BackendPlugin *backend = m_backends[i].second;
+        if (auto *imap = qobject_cast<ImapBackend *>(backend))
+            imap->stopIo();
+        backend->shutdown();
+
+        m_backends.removeAt(i);
+        m_conversationsByAccount.remove(accountId);
+        rebuildMergedConversations();
+
+        if (accountId.startsWith(QLatin1String("imap:")) && m_vault && !m_vault->isLocked()) {
+            // accountId = imap:<user>@<host>; split on LAST '@' since
+            // user is often an email address containing '@'.
+            const QString userHost = accountId.mid(5);
+            const int at = userHost.lastIndexOf(QLatin1Char('@'));
+            if (at > 0) {
+                AccountStore store(accountsDbPath(), m_vault->key());
+                QString err;
+                if (store.open(&err)
+                        && !store.remove(QStringLiteral("imap"), userHost.left(at),
+                                         userHost.mid(at + 1), &err))
+                    emit errorOccurred(QStringLiteral("Remove persisted account failed: ") + err);
+            }
+        }
+
+        emit backendsChanged();
+        updateLockOverlayVisibility();
+        setConfigStatus(QStringLiteral("Account removed: ") + accountId);
+        return;
     }
 
-    QVariantMap toStore = credentials;
-    toStore.insert(QStringLiteral("type"), QStringLiteral("imap"));
-    arr.append(QJsonObject::fromVariantMap(toStore));
+    emit errorOccurred(QStringLiteral("No such account: ") + accountId);
+}
 
-    QFile out(path);
-    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        out.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
-        out.close();
-        // Credentials on disk: owner-only.
-        QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-    }
+QString AccountController::accountsDbPath() const
+{
+    return m_vault ? m_vault->vaultDir() + QStringLiteral("/accounts.db") : QString();
 }
 
 /// \brief Shared post-unlock path — every successful vault entry point
-///        (create/unlock/recover) lands here: hand the data key to
-///        encrypted backends, start their IO, fetch conversations.
+///        (create/unlock/recover) lands here: load persisted accounts,
+///        hand the data key to encrypted backends, start their IO,
+///        fetch conversations.
 void AccountController::onVaultUnlocked()
 {
+    // Migrate first so imported rows are loaded in the same pass.
+    migrateLegacyAccountsJson();
+    loadPersistedAccounts();
+
     const QByteArray key = m_vault->key();
     for (const auto &pair : m_backends) {
         if (auto *imap = qobject_cast<ImapBackend *>(pair.second)) {
@@ -501,6 +573,91 @@ void AccountController::onVaultUnlocked()
         }
     }
     fetchConversations();
+}
+
+/// \brief Construct + register backends from the vault's encrypted
+///        accounts table. Called post-unlock; IO start happens in the
+///        shared loop in onVaultUnlocked.
+void AccountController::loadPersistedAccounts()
+{
+    if (!m_vault)
+        return;
+
+    AccountStore store(accountsDbPath(), m_vault->key());
+    QString err;
+    if (!store.open(&err)) {
+        emit errorOccurred(QStringLiteral("Accounts DB: ") + err);
+        return;
+    }
+
+    const auto rows = store.list();
+    for (const QVariantMap &creds : rows) {
+        if (creds.value(QStringLiteral("type")).toString() != QLatin1String("imap"))
+            continue;
+
+        const QString accountId = QStringLiteral("imap:")
+                                + creds.value(QStringLiteral("user")).toString()
+                                + QStringLiteral("@")
+                                + creds.value(QStringLiteral("host")).toString();
+
+        bool dup = false;
+        for (const auto &pair : m_backends) {
+            if (pair.first == accountId) { dup = true; break; }
+        }
+        if (dup)
+            continue;
+
+        auto *backend = new ImapBackend(this);
+        backend->initialize({});
+        backend->configure(creds);
+        m_backends.append({accountId, backend});
+        connectBackend(accountId, backend);
+    }
+
+    if (!rows.isEmpty()) {
+        emit backendsChanged();
+        updateLockOverlayVisibility();
+    }
+}
+
+/// \brief One-time migration: a legacy plaintext accounts.json (from
+///        before the vault DB) is imported into the encrypted store,
+///        then renamed out of the way.
+void AccountController::migrateLegacyAccountsJson()
+{
+    if (!m_vault)
+        return;
+
+    const QString legacy = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+                         + QStringLiteral("/accounts.json");
+    if (!QFile::exists(legacy))
+        return;
+
+    AccountStore store(accountsDbPath(), m_vault->key());
+    QString err;
+    if (!store.open(&err) || !store.isEmpty())
+        return;
+
+    QFile in(legacy);
+    if (!in.open(QIODevice::ReadOnly))
+        return;
+    const QJsonDocument doc = QJsonDocument::fromJson(in.readAll());
+    in.close();
+
+    for (const QJsonValue &v : doc.array()) {
+        const QJsonObject o = v.toObject();
+        QVariantMap creds;
+        creds[QStringLiteral("type")] = o.value(QStringLiteral("type")).toString();
+        creds[QStringLiteral("host")] = o.value(QStringLiteral("host")).toString();
+        creds[QStringLiteral("port")] = o.value(QStringLiteral("port")).toInt(993);
+        creds[QStringLiteral("user")] = o.value(QStringLiteral("user")).toString();
+        creds[QStringLiteral("pass")] = o.value(QStringLiteral("pass")).toString();
+        creds[QStringLiteral("tls")] = o.value(QStringLiteral("tls")).toBool(true);
+        store.add(creds);
+    }
+
+    QFile::rename(legacy, legacy + QStringLiteral(".migrated"));
+    qInfo() << "Migrated legacy accounts.json into the encrypted vault DB";
 }
 
 void AccountController::unlockWithPassphrase(const QString &passphrase)

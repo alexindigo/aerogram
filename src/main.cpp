@@ -81,8 +81,10 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     const QCommandLineOption backendOpt(
         QStringLiteral("backend"),
-        QStringLiteral("Single backend to use: deltachat | imap | mock"),
-        QStringLiteral("name"), QStringLiteral("deltachat"));
+        QStringLiteral("Explicitly start a backend: deltachat | imap | mock. "
+                       "With no flags and no saved accounts, the app boots "
+                       "empty into the first-run vault flow."),
+        QStringLiteral("name"));
     const QCommandLineOption accountsOpt(
         QStringLiteral("accounts"),
         QStringLiteral("JSON file with an array of accounts "
@@ -109,51 +111,46 @@ int main(int argc, char *argv[])
     if (parser.isSet(accountsOpt))
         loadAccountsFile(parser.value(accountsOpt), backends);
 
-    if (parser.value(backendOpt) == QLatin1String("imap")) {
-        QVariantMap creds;
-        creds[QStringLiteral("host")] = parser.value(imapHostOpt);
-        creds[QStringLiteral("port")] = parser.value(imapPortOpt).toInt();
-        creds[QStringLiteral("user")] = parser.value(imapUserOpt);
-        creds[QStringLiteral("pass")] = parser.value(imapPassOpt);
-        creds[QStringLiteral("tls")] = parser.isSet(imapTlsOpt);
-        const QString accountId = QStringLiteral("imap:")
-                                + creds[QStringLiteral("user")].toString()
-                                + QStringLiteral("@")
-                                + creds[QStringLiteral("host")].toString();
-        backends.append({accountId, makeImapBackend(creds)});
-    } else if (parser.value(backendOpt) == QLatin1String("mock")) {
-        auto *mock = new MockBackend();
-        mock->initialize({});
-        backends.append({QStringLiteral("mock"), mock});
-    } else {
-        auto *dc = new DeltaChatBackend();
-        dc->initialize({});
-        backends.append({QStringLiteral("deltachat"), dc});
-    }
-
-    // Accounts added via the in-app dialog persist here and auto-load
-    // on every launch (any backend selection), no CLI flags needed.
-    const QString defaultAccounts =
-        QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-        + QStringLiteral("/accounts.json");
-    loadAccountsFile(defaultAccounts, backends);
-
-    // Encrypted backends (imap:*) need the vault. The app boots to a
-    // lock overlay; unlockWithPassphrase starts IO. Non-encrypted runs
-    // (mock/deltachat only) skip the vault entirely.
-    bool needsVault = false;
-    for (const auto &pair : backends) {
-        if (pair.first.startsWith(QLatin1String("imap:"))) {
-            needsVault = true;
-            break;
+    if (parser.isSet(backendOpt)) {
+        const QString b = parser.value(backendOpt);
+        if (b == QLatin1String("imap")) {
+            QVariantMap creds;
+            creds[QStringLiteral("host")] = parser.value(imapHostOpt);
+            creds[QStringLiteral("port")] = parser.value(imapPortOpt).toInt();
+            creds[QStringLiteral("user")] = parser.value(imapUserOpt);
+            creds[QStringLiteral("pass")] = parser.value(imapPassOpt);
+            creds[QStringLiteral("tls")] = parser.isSet(imapTlsOpt);
+            const QString accountId = QStringLiteral("imap:")
+                                    + creds[QStringLiteral("user")].toString()
+                                    + QStringLiteral("@")
+                                    + creds[QStringLiteral("host")].toString();
+            backends.append({accountId, makeImapBackend(creds)});
+        } else if (b == QLatin1String("mock")) {
+            auto *mock = new MockBackend();
+            mock->initialize({});
+            backends.append({QStringLiteral("mock"), mock});
+        } else if (b == QLatin1String("deltachat")) {
+            auto *dc = new DeltaChatBackend();
+            dc->initialize({});
+            backends.append({QStringLiteral("deltachat"), dc});
+        } else {
+            qWarning().noquote() << "Unknown backend:" << b;
         }
     }
 
+    // Dialog-added accounts persist in the encrypted vault DB and load
+    // post-unlock (controller-driven). No plaintext accounts file is
+    // read at boot; a legacy accounts.json is migrated on first unlock.
+
+    // The vault is always constructed and wired: plain launches with no
+    // accounts boot into the first-run vault-creation form, and adding
+    // an encrypted account at runtime engages it. Whether the overlay
+    // shows is the controller's showLockOverlay property.
     MasterKeyManager vault(
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
         + QStringLiteral("/vault"));
 
-    AccountController controller(backends, needsVault ? &vault : nullptr);
+    AccountController controller(backends, &vault);
 
     IpcServer ipc(&controller);
 
@@ -162,10 +159,12 @@ int main(int argc, char *argv[])
 
     const QUrl url(QStringLiteral("qrc:/Aerogram/ui/main.qml"));
     engine.load(url);
+    if (engine.rootObjects().isEmpty())
+        qFatal("QML root failed to load");
 
-    // Encrypted backends start on unlock (controller drives that via
-    // unlockWithPassphrase). Unencrypted runs fetch immediately.
-    if (!needsVault)
+    // When the lock overlay shows, unlock/create drives startup via the
+    // controller. Otherwise fetch immediately.
+    if (!controller.showLockOverlay())
         controller.fetchConversations();
 
     return app.exec();

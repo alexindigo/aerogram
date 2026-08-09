@@ -2,6 +2,8 @@
 #define IPCSERVER_H
 
 #include <QDebug>
+#include <QDir>
+#include <QFileInfo>
 #include <QGenericArgument>
 #include <QHash>
 #include <QJsonArray>
@@ -45,6 +47,9 @@ public:
     {
         const QString socketPath = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
                                  + QStringLiteral("/aerogram.ipc");
+        // Fresh machines may not have the cache dir yet (listen fails
+        // with "Name error" if the parent doesn't exist).
+        QDir().mkpath(QFileInfo(socketPath).absolutePath());
         QLocalServer::removeServer(socketPath);
 
         connect(m_server, &QLocalServer::newConnection, this, &IpcServer::onNewConnection);
