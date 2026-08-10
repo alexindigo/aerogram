@@ -1,6 +1,5 @@
 #include "controllers/AccountController.h"
 
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
@@ -284,6 +283,28 @@ void AccountController::setActiveMessages(const QVariantList &messages)
 // through the BackendPlugin interface inside Account entities.
 // ---------------------------------------------------------------------
 
+namespace {
+
+/// \brief THE one identity-color derivation: djb2 over the lowercase
+///        UTF-16 key, indexed into the shared palette. MUST stay in
+///        sync with IdentityBlock.qml's JS implementation — same
+///        palette, same algorithm, same key (bare address/label, no
+///        backend suffix), so the account rail chip and every sender
+///        block for the same address render the same color.
+QString identityColor(const QString &key)
+{
+    static const char *palette[] = {
+        "#4c9baf", "#7a5fb5", "#b5546e", "#5f8f4e", "#b58433", "#3f7fa5"
+    };
+    const QString lower = key.toLower();
+    quint32 h = 5381;
+    for (const QChar c : lower)
+        h = (h << 5) + h + c.unicode();   // quint32 wrap == JS >>> 0
+    return QString::fromLatin1(palette[h % (sizeof(palette) / sizeof(palette[0]))]);
+}
+
+} // namespace
+
 void AccountController::registerAccount(const QString &type, const QVariantMap &credentials,
                                         BackendPlugin *backend)
 {
@@ -302,14 +323,9 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
     a.id = a.label + QLatin1Char('#') + type;
 
     a.index = m_accounts.size();
-    // Color: derived deterministically from the account id (md5 —
-    // qHash is not stable across runs), so the rail color never drifts.
-    static const char *palette[] = {
-        "#4c9baf", "#7a5fb5", "#b5546e", "#5f8f4e", "#b58433", "#3f7fa5"
-    };
-    const QByteArray hash = QCryptographicHash::hash(a.id.toUtf8(), QCryptographicHash::Md5);
-    a.color = QString::fromLatin1(
-        palette[static_cast<unsigned char>(hash.at(0)) % (sizeof(palette) / sizeof(palette[0]))]);
+    // Color keys on the LABEL (bare address), never the id: the backend
+    // suffix must not change an identity's color.
+    a.color = identityColor(a.label);
 
     // The controller owns backend instances (Qt parent-child teardown).
     backend->setParent(this);

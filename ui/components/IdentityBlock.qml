@@ -26,9 +26,12 @@ Rectangle {
     readonly property var colors: ["#4c9baf", "#7a5fb5", "#b5546e", "#5f8f4e", "#b58433", "#3f7fa5"]
 
     color: {
-        // djb2 — pure JS, stable across runs (Qt's qHash is not).
+        // djb2 over the lowercase address — MUST stay in sync with
+        // identityColor() in AccountController.cpp (same palette,
+        // algorithm, and key), so a sender block and the owning
+        // account's rail chip always render the same color.
         let h = 5381
-        const a = block.address
+        const a = block.address.toLowerCase()
         for (let i = 0; i < a.length; ++i)
             h = ((h << 5) + h + a.charCodeAt(i)) >>> 0
         return colors[h % colors.length]
