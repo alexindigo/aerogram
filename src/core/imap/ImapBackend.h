@@ -146,7 +146,7 @@ public:
         const int port = m_port;
         const bool tls = m_tls;
 
-        m_workers.addFuture(QtConcurrent::run([this, host, port, user, pass, tls]() {
+        track(QtConcurrent::run([this, host, port, user, pass, tls]() {
             if (m_shuttingDown) return;
             CurlTransport t(host, port, user, pass, tls);
             QStringList folders;
@@ -178,7 +178,7 @@ public:
     {
         const QString dbPath = m_dbPath;
         const QByteArray key = m_key;
-        m_workers.addFuture(QtConcurrent::run([this, dbPath, key]() {
+        track(QtConcurrent::run([this, dbPath, key]() {
             if (m_shuttingDown) return;
             // Fail closed: without the key, never touch the DB — opening
             // it keyless would create a plaintext index.db that later
@@ -210,7 +210,7 @@ public:
     {
         const QString dbPath = m_dbPath;
         const QByteArray key = m_key;
-        m_workers.addFuture(QtConcurrent::run([this, dbPath, key, conversationId]() {
+        track(QtConcurrent::run([this, dbPath, key, conversationId]() {
             if (m_shuttingDown) return;
             QVector<Message> msgs;
             if (key.isEmpty()) {
@@ -237,7 +237,7 @@ public:
         const QString dbPath = m_dbPath;
         const QString storageRoot = m_storageRoot;
         const QByteArray key = m_key;
-        m_workers.addFuture(QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
+        track(QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
             if (m_shuttingDown) return;
             QString body;
             QString rel;
@@ -280,7 +280,7 @@ public:
         const QString storageRoot = m_storageRoot;
         const QByteArray key = m_key;
         const QString dest = destinationPath;
-        m_workers.addFuture(QtConcurrent::run([this, dbPath, storageRoot, key, messageId, partIndex, dest]() {
+        track(QtConcurrent::run([this, dbPath, storageRoot, key, messageId, partIndex, dest]() {
             if (m_shuttingDown) return;
             bool ok = false;
             QString rel;
@@ -334,13 +334,13 @@ private slots:
         const QString accountLabel = m_accountLabel;
         const QByteArray key = m_key;
 
-        m_workers.addFuture(QtConcurrent::run([this, host, port, user, pass, tls, storageRoot, dbPath,
+        track(QtConcurrent::run([this, host, port, user, pass, tls, storageRoot, dbPath,
                            accountLabel, key]() {
             if (m_shuttingDown) return;
             QString err;
             const QVector<Conversation> convs = syncWorker(host, port, user, pass, tls,
                                                            storageRoot, dbPath, accountLabel,
-                                                           key, &err);
+                                                           key, std::cref(m_shuttingDown), &err);
             QMetaObject::invokeMethod(this, [this, convs, err]() {
                 m_syncInFlight = false;
                 if (!err.isEmpty()) {
@@ -370,6 +370,7 @@ private:
                                             const QString &dbPath,
                                             const QString &accountLabel,
                                             const QByteArray &key,
+                                            const std::atomic<bool> &shuttingDown,
                                             QString *errOut)
     {
         CurlTransport t(host, port, user, pass, tls);
@@ -391,6 +392,7 @@ private:
             }
 
             for (const QString &folder : folders) {
+                if (shuttingDown) break;          // checkpoint between folders
                 QList<int> uids;
                 if (!t.uidSearchAll(folder, uids, &err))
                     continue;
@@ -409,6 +411,7 @@ private:
                 QString newestSubject;
 
                 for (const int uid : uids) {
+                    if (shuttingDown) break;      // checkpoint between messages
                     QByteArray raw;
                     bool seen = false;
                     if (!t.fetchMessage(folder, uid, raw, seen, &err) || raw.isEmpty())
@@ -469,6 +472,19 @@ private:
     QString m_dbPath;
     QString m_accountLabel;
     QByteArray m_key;
+    /// \brief Register a worker future. QFutureSynchronizer has no
+    ///        per-future removal, so clear the list wholesale whenever
+    ///        nothing is in flight — otherwise it grows without bound
+    ///        (~1.4k futures/day idle at 60s polling).
+    void track(QFuture<void> f)
+    {
+        const auto fs = m_workers.futures();
+        if (std::all_of(fs.cbegin(), fs.cend(),
+                        [](const QFuture<void> &w) { return w.isFinished(); }))
+            m_workers.clearFutures();
+        m_workers.addFuture(f);
+    }
+
     QTimer *m_pollTimer;
     QFutureSynchronizer<void> m_workers;
     std::atomic<bool> m_shuttingDown{false};
