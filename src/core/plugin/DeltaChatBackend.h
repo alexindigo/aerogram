@@ -140,6 +140,7 @@ public:
             .then([this](QJsonValue r) {
                 qWarning().noquote() << "DeltaChat: is_configured:" << r.toBool()
                                      << "qr pending:" << !m_pendingQr.isEmpty();
+                startEventPump();
                 if (r.toBool()) {
                     // Already configured: learn the identity, then go
                     // online and report ready.
@@ -170,6 +171,7 @@ public:
 
     void shutdown() override
     {
+        m_pumpRunning = false;
         if (m_process->state() != QProcess::NotRunning) {
             m_process->terminate();
             m_process->waitForFinished(3000);
@@ -305,17 +307,9 @@ public:
                         conversations.reserve(results.size());
                         int i = 0;
                         for (const auto &f : results) {
-                            const QJsonObject chatObj = f.result().toObject();
-                            Conversation c;
-                            c.id = QString::number(ids->value(i));
-                            c.kind = QStringLiteral("chat");
-                            c.name = chatObj.value(QStringLiteral("name")).toString();
-                            c.preview = QString();
-                            // freshMessageCounter rides along with the
-                            // full chat fetch — no extra RPC needed.
-                            c.unreadCount = chatObj.value(QStringLiteral("freshMessageCounter")).toInt();
-                            c.lastActivity = QDateTime::currentDateTime();
-                            conversations.append(c);
+                            conversations.append(
+                                conversationFromJson(ids->value(i),
+                                                     f.result().toObject()));
                             ++i;
                         }
                         emit conversationsReady(conversations);
@@ -356,31 +350,7 @@ public:
                     const QJsonObject m = byId.value(key).toObject();
                     if (m.isEmpty())
                         continue;
-                    Message msg;
-                    msg.messageId = key;
-                    msg.conversationId = conversationId;
-                    const QJsonObject sender = m.value(QStringLiteral("sender")).toObject();
-                    QString name = sender.value(QStringLiteral("displayName")).toString();
-                    if (name.isEmpty())
-                        name = sender.value(QStringLiteral("address")).toString();
-                    msg.sender = name;
-                    msg.date = QDateTime::fromSecsSinceEpoch(
-                        m.value(QStringLiteral("sortTimestamp")).toInteger());
-                    msg.body = m.value(QStringLiteral("text")).toString();
-                    msg.snippet = msg.body.left(120);
-                    // DC states: 10 = incoming fresh, 13 = incoming noticed.
-                    const int state = m.value(QStringLiteral("state")).toInt();
-                    msg.isUnread = (state == 10 || state == 13);
-                    const QString file = m.value(QStringLiteral("file")).toString();
-                    if (!file.isEmpty()) {
-                        AttachmentMeta a;
-                        a.index = 0;  // DC: one file per message
-                        a.filename = m.value(QStringLiteral("fileName")).toString();
-                        a.mimeType = m.value(QStringLiteral("fileMime")).toString();
-                        a.size = m.value(QStringLiteral("fileBytes")).toInteger();
-                        msg.attachments.append(a);
-                    }
-                    messages.append(msg);
+                    messages.append(messageFromJson(key, m, conversationId));
                     seenIds.append(key.toInt());
                 }
                 emit messagesReady(conversationId, messages);
@@ -485,8 +455,10 @@ private slots:
 
             const QJsonObject obj = doc.object();
 
-            // Events (notifications) have no id — ignored for now.
-            if (!obj.contains("id") || obj.value("id").isNull())
+            // Responses carry a truthy id; anything else is noise on
+            // this server (events do NOT stream — they are polled via
+            // get_next_event_batch, see pumpEvents).
+            if (!obj.value("id").isDouble())
                 continue;
 
             const int responseId = obj.value("id").toInt();
@@ -572,6 +544,142 @@ private:
         m_process->write(data);
     }
 
+    // -----------------------------------------------------------------
+    // Shared JSON → DTO mappers (used by the fetch paths AND the push
+    // path, so the two can never drift apart).
+    // -----------------------------------------------------------------
+
+    static Conversation conversationFromJson(int chatId, const QJsonObject &chatObj)
+    {
+        Conversation c;
+        c.id = QString::number(chatId);
+        c.kind = QStringLiteral("chat");
+        c.name = chatObj.value(QStringLiteral("name")).toString();
+        c.preview = QString();
+        // freshMessageCounter rides along with the full chat fetch —
+        // no extra RPC needed.
+        c.unreadCount = chatObj.value(QStringLiteral("freshMessageCounter")).toInt();
+        c.lastActivity = QDateTime::currentDateTime();
+        return c;
+    }
+
+    static Message messageFromJson(const QString &key, const QJsonObject &m,
+                                   const QString &conversationId)
+    {
+        Message msg;
+        msg.messageId = key;
+        msg.conversationId = conversationId;
+        const QJsonObject sender = m.value(QStringLiteral("sender")).toObject();
+        QString name = sender.value(QStringLiteral("displayName")).toString();
+        if (name.isEmpty())
+            name = sender.value(QStringLiteral("address")).toString();
+        msg.sender = name;
+        msg.date = QDateTime::fromSecsSinceEpoch(
+            m.value(QStringLiteral("sortTimestamp")).toInteger());
+        msg.body = m.value(QStringLiteral("text")).toString();
+        msg.snippet = msg.body.left(120);
+        // DC states: 10 = incoming fresh, 13 = incoming noticed.
+        const int state = m.value(QStringLiteral("state")).toInt();
+        msg.isUnread = (state == 10 || state == 13);
+        const QString file = m.value(QStringLiteral("file")).toString();
+        if (!file.isEmpty()) {
+            AttachmentMeta a;
+            a.index = 0;  // DC: one file per message
+            a.filename = m.value(QStringLiteral("fileName")).toString();
+            a.mimeType = m.value(QStringLiteral("fileMime")).toString();
+            a.size = m.value(QStringLiteral("fileBytes")).toInteger();
+            msg.attachments.append(a);
+        }
+        return msg;
+    }
+
+    // -----------------------------------------------------------------
+    // Event pump. deltachat-rpc-server does NOT push notifications:
+    // events are polled — get_next_event_batch blocks server-side until
+    // events exist, then resolves. We re-arm after every batch: an
+    // always-pending future, driven by readyRead, no threads, no UI
+    // blocking. One consumer per server process (that's us).
+    // -----------------------------------------------------------------
+
+    void startEventPump()
+    {
+        if (m_pumpRunning)
+            return;
+        m_pumpRunning = true;
+        pumpEvents();
+    }
+
+    void pumpEvents()
+    {
+        call(QStringLiteral("get_next_event_batch"), {})
+            .then([this](QJsonValue batch) {
+                handleEvents(batch.toArray());
+                pumpEvents();  // re-arm
+            })
+            .onFailed([this](const std::exception &e) {
+                qWarning().noquote() << "DeltaChat: event pump:" << e.what();
+                // Back off briefly, then re-arm (process death surfaces
+                // separately via onProcessError).
+                QTimer::singleShot(1000, this, [this] {
+                    if (m_pumpRunning)
+                        pumpEvents();
+                });
+            });
+    }
+
+    void handleEvents(const QJsonArray &batch)
+    {
+        for (const QJsonValue &v : batch) {
+            const QJsonObject evt = v.toObject()
+                                        .value(QStringLiteral("event")).toObject();
+            const QString kind = evt.value(QStringLiteral("kind")).toString();
+
+            if (kind == QLatin1String("IncomingMsg")) {
+                const int chatId = evt.value(QStringLiteral("chatId")).toInt();
+                const int msgId = evt.value(QStringLiteral("msgId")).toInt();
+                if (chatId <= 0 || msgId <= 0)
+                    continue;
+                // Payload push: fetch the arrived message and emit it
+                // plus a fresh conversation row (unread count).
+                call(QStringLiteral("get_messages"), {m_accountId, QJsonArray{msgId}})
+                    .then([this, chatId, msgId](QJsonValue r) {
+                        const QJsonObject m =
+                            r.toObject().value(QString::number(msgId)).toObject();
+                        if (m.isEmpty())
+                            return;
+                        emit messageArrived(QString::number(chatId),
+                                            messageFromJson(QString::number(msgId), m,
+                                                            QString::number(chatId)));
+                        refreshConversationRow(chatId);
+                    })
+                    .onFailed([this](const std::exception &e) {
+                        emit errorOccurred(QString::fromUtf8(e.what()));
+                    });
+            } else if (kind == QLatin1String("ChatModified")) {
+                const int chatId = evt.value(QStringLiteral("chatId")).toInt();
+                if (chatId > 0)
+                    refreshConversationRow(chatId);
+            } else if (kind == QLatin1String("IncomingMsgBunch")
+                       || kind == QLatin1String("MsgsChanged")) {
+                // Bursts/bulk changes: coarse invalidation, the
+                // controller debounces these into one refetch.
+                emit storageChanged();
+            }
+            // Info/ConnectivityChanged/etc.: not user-visible state.
+        }
+    }
+
+    void refreshConversationRow(int chatId)
+    {
+        call(QStringLiteral("get_full_chat_by_id"), {m_accountId, chatId})
+            .then([this, chatId](QJsonValue r) {
+                emit conversationUpserted(conversationFromJson(chatId, r.toObject()));
+            })
+            .onFailed([this](const std::exception &e) {
+                emit errorOccurred(QString::fromUtf8(e.what()));
+            });
+    }
+
     QProcess *m_process;
     int m_accountId = 0;
     int m_nextId = 1;
@@ -579,6 +687,7 @@ private:
     QString m_addr;
     QString m_accountsPath;
     bool m_ioRequested = false;  // startIo arrived before the id existed
+    bool m_pumpRunning = false;
     QHash<int, std::shared_ptr<QPromise<QJsonValue>>> m_pending;
     QByteArray m_buffer;
 };
