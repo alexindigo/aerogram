@@ -38,6 +38,9 @@ class AccountController : public QObject
     Q_PROPERTY(QString activeMessageId READ activeMessageId NOTIFY activeMessageIdChanged)
     Q_PROPERTY(QVariantList activeMessages READ activeMessages NOTIFY activeMessagesChanged)
     Q_PROPERTY(QVariantList panelLayout READ panelLayout NOTIFY panelLayoutChanged)
+    // Picker-visible backend schemas from the registry (constant after
+    // startup registration in main.cpp).
+    Q_PROPERTY(QVariantList availableBackends READ availableBackends CONSTANT)
     Q_PROPERTY(bool isLocked READ isLocked NOTIFY isLockedChanged)
     Q_PROPERTY(QString lockStatusText READ lockStatusText NOTIFY lockStatusTextChanged)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
@@ -64,6 +67,7 @@ public:
     QString activeMessageId() const;
     QVariantList activeMessages() const;
     QVariantList panelLayout() const;
+    QVariantList availableBackends() const;
     bool isLocked() const;
     QString lockStatusText() const;
     bool vaultExists() const;

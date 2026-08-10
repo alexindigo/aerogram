@@ -48,8 +48,8 @@ qt_add_qml_module(aerogram
         ui/views/EmailMessagesPanel.qml
         ui/views/ChatView.qml
         ui/views/SettingsView.qml
+        ui/views/AddAccountPanel.qml
         ui/components/Sidebar.qml
-        ui/components/AddAccountDialog.qml
         ui/components/LockOverlay.qml
         ui/components/AeroIcon.qml
         ui/components/IdentityBlock.qml

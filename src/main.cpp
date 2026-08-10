@@ -69,6 +69,19 @@ int main(int argc, char *argv[])
             auto *backend = new ImapBackend();
             backend->initialize({});
             return backend;
+        },
+        {
+            QStringLiteral(),  // type — filled by registerType
+            QStringLiteral("Email (IMAP)"),
+            QStringLiteral("email"),
+            QStringLiteral("Classic email account on any IMAP server."),
+            {
+                {QStringLiteral("host"), QStringLiteral("Server"), QStringLiteral("imap.example.com"), QStringLiteral("text"), true},
+                {QStringLiteral("port"), QStringLiteral("Port"), QStringLiteral("993"), QStringLiteral("int"), true},
+                {QStringLiteral("user"), QStringLiteral("Username"), QStringLiteral("user@example.com"), QStringLiteral("text"), true},
+                {QStringLiteral("pass"), QStringLiteral("Password"), QStringLiteral("Password or app password"), QStringLiteral("password"), true},
+                {QStringLiteral("tls"), QStringLiteral("Use TLS"), QString(), QStringLiteral("bool"), false},
+            },
         });
     BackendRegistry::registerType(QStringLiteral("mock"),
         [](const QVariantMap &) -> BackendPlugin * {
@@ -83,6 +96,16 @@ int main(int argc, char *argv[])
             // "accounts_path" overrides.
             backend->initialize(credentials);
             return backend;
+        },
+        {
+            QStringLiteral(),  // type — filled by registerType
+            QStringLiteral("Delta Chat"),
+            QStringLiteral("chat"),
+            QStringLiteral("Chat over email. Paste a dcaccount: invite "
+                           "or a scanned QR code's text."),
+            {
+                {QStringLiteral("qr"), QStringLiteral("Invite / QR text"), QStringLiteral("dcaccount:https://…"), QStringLiteral("text"), true},
+            },
         });
 
     QCommandLineParser parser;

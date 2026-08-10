@@ -76,6 +76,35 @@ QString AccountController::activeMessageId() const { return m_activeMessageId; }
 QVariantList AccountController::activeMessages() const { return m_activeMessages; }
 QVariantList AccountController::panelLayout() const { return m_panelLayout; }
 
+/// \brief Serialize the registry's picker-visible backend schemas for
+///        QML: [{type, displayName, family, description, fields:
+///        [{key, label, placeholder, kind, required]}]. Constant per
+///        run — registration happens once in main.cpp.
+QVariantList AccountController::availableBackends() const
+{
+    QVariantList out;
+    for (const BackendInfo &info : BackendRegistry::backendInfos()) {
+        QVariantList fields;
+        for (const BackendField &f : info.fields) {
+            fields.append(QVariantMap{
+                {QStringLiteral("key"), f.key},
+                {QStringLiteral("label"), f.label},
+                {QStringLiteral("placeholder"), f.placeholder},
+                {QStringLiteral("kind"), f.kind},
+                {QStringLiteral("required"), f.required},
+            });
+        }
+        out.append(QVariantMap{
+            {QStringLiteral("type"), info.type},
+            {QStringLiteral("displayName"), info.displayName},
+            {QStringLiteral("family"), info.family},
+            {QStringLiteral("description"), info.description},
+            {QStringLiteral("fields"), fields},
+        });
+    }
+    return out;
+}
+
 bool AccountController::isLocked() const { return m_vault ? m_vault->isLocked() : false; }
 QString AccountController::lockStatusText() const { return m_vault ? m_vault->statusText() : QString(); }
 bool AccountController::vaultExists() const { return m_vault ? m_vault->vaultExists() : false; }
@@ -181,9 +210,13 @@ void AccountController::recomputeLayout()
     const bool narrow = m_windowWidth < narrowBelow;
 
     if (m_activeView == QLatin1String("chats") ||
-        m_activeView == QLatin1String("settings")) {
+        m_activeView == QLatin1String("settings") ||
+        m_activeView == QLatin1String("addAccount")) {
         const QString id = m_activeView == QLatin1String("chats")
-            ? QStringLiteral("chat-conversations") : QStringLiteral("settings");
+            ? QStringLiteral("chat-conversations")
+            : m_activeView == QLatin1String("settings")
+                ? QStringLiteral("settings")
+                : QStringLiteral("add-account");
         addVsep(x);
         x += sepWidth;
         add(id, QStringLiteral("panel"), x, 0, m_windowWidth - x, m_windowHeight);

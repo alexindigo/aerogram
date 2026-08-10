@@ -19,7 +19,8 @@ Kirigami.ApplicationWindow {
         "email-conversations": "views/EmailConversationsPanel.qml",
         "email-messages": "views/EmailMessagesPanel.qml",
         "chat-conversations": "views/ChatView.qml",
-        "settings": "views/SettingsView.qml"
+        "settings": "views/SettingsView.qml",
+        "add-account": "views/AddAccountPanel.qml"
     })
 
     onWidthChanged: accountController.setWindowSize(width, height)
@@ -31,7 +32,9 @@ Kirigami.ApplicationWindow {
             item.settingsRequested.connect(function() {
                 accountController.setActiveView("settings")
             })
-            item.addAccountRequested.connect(function() { addAccountDialog.open() })
+            item.addAccountRequested.connect(function() {
+                accountController.setActiveView("addAccount")
+            })
             item.accountSelected.connect(function(accId) {
                 accountController.selectAccount(accId)
             })
@@ -46,6 +49,13 @@ Kirigami.ApplicationWindow {
         } else if (id === "chat-conversations") {
             item.chatSelected.connect(function(cid) {
                 accountController.fetchMessages(cid)
+                accountController.setActiveView("email")
+            })
+        } else if (id === "add-account") {
+            item.accountSubmitted.connect(function(credentials) {
+                accountController.addAccount(credentials)
+            })
+            item.cancelled.connect(function() {
                 accountController.setActiveView("email")
             })
         } else if (id === "settings") {
@@ -88,12 +98,9 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    AddAccountDialog {
-        id: addAccountDialog
-        onAccountSubmitted: (credentials) => {
-            accountController.addAccount(credentials)
-        }
-    }
+    // AddAccountDialog was replaced by the schema-driven add-account
+    // panel (views/AddAccountPanel.qml), reached via the sidebar "+"
+    // and the controller's activeView.
 
     LockOverlay {
         onUnlockRequested: (pass) => {
