@@ -55,3 +55,24 @@ void MessageListModel::setMessages(const QVector<Message> &messages)
     m_messages = messages;
     endResetModel();
 }
+
+void MessageListModel::appendMessage(const Message &message)
+{
+    // Push arrivals are newest; the list is time-ordered ascending, so
+    // they land at the end.
+    beginInsertRows(QModelIndex(), m_messages.size(), m_messages.size());
+    m_messages.append(message);
+    endInsertRows();
+}
+
+void MessageListModel::removeMessageById(const QString &messageId)
+{
+    for (int i = 0; i < m_messages.size(); ++i) {
+        if (m_messages.at(i).messageId == messageId) {
+            beginRemoveRows(QModelIndex(), i, i);
+            m_messages.removeAt(i);
+            endRemoveRows();
+            return;
+        }
+    }
+}

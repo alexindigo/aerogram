@@ -68,6 +68,23 @@ signals:
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body);
     void attachmentSaved(bool ok, const QString &messageId, const QString &path);
+
+    // -----------------------------------------------------------------
+    // Push events (unsolicited — the backend's store changed outside
+    // any request). Payload-carrying where the backend knows the data
+    // cheaply; storageChanged() is the coarse fallback for bursts and
+    // ambiguous changes. All ids are backend-local; the controller
+    // compounds them on the way in.
+    // -----------------------------------------------------------------
+
+    /// A single new message landed (known id and content).
+    void messageArrived(const QString &conversationId, const Message &message);
+    /// A conversation's row data changed (preview, unread, activity).
+    void conversationUpserted(const Conversation &conversation);
+    /// A message vanished (deleted/expired).
+    void messageRemoved(const QString &conversationId, const QString &messageId);
+    /// Store changed in some bulk/unspecified way — controller refetches.
+    void storageChanged();
 };
 
 #endif

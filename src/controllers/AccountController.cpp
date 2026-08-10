@@ -471,6 +471,92 @@ void AccountController::connectBackend(const Account &account)
                 emit attachmentSaved(ok, messageId, path);
             });
 
+    // -----------------------------------------------------------------
+    // Push events: payload-carrying signals apply immediately (they are
+    // already precise); the coarse storageChanged is debounced into a
+    // targeted refetch. Everything compounds local ids on the way in.
+    // -----------------------------------------------------------------
+
+    connect(backend, &BackendPlugin::messageArrived, this,
+            [this, accountId](const QString &localConvId, const Message &msg) {
+                if (!accountById(accountId))
+                    return;
+                const QString compound = accountId + QStringLiteral("/") + localConvId;
+                if (compound != m_activeConversationId)
+                    return;  // badge arrives via conversationUpserted
+                // Dedup: our own sends echo back through the push channel.
+                for (const Message &m : m_currentConversationMessages) {
+                    if (m.messageId == msg.messageId)
+                        return;
+                }
+                Message fixed = msg;
+                fixed.conversationId = compound;
+                m_currentConversationMessages.append(fixed);
+                m_messageModel->appendMessage(fixed);
+                emit messagesChanged(compound);
+            });
+
+    connect(backend, &BackendPlugin::conversationUpserted, this,
+            [this, accountId](const Conversation &conv) {
+                if (!accountById(accountId))
+                    return;
+                Conversation c = conv;
+                c.id = accountId + QStringLiteral("/") + conv.id;
+                auto &vec = m_conversationsByAccount[accountId];
+                bool found = false;
+                for (int i = 0; i < vec.size(); ++i) {
+                    if (vec[i].id == c.id) {
+                        vec[i] = c;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    vec.append(c);
+                rebuildMergedConversations();
+            });
+
+    connect(backend, &BackendPlugin::messageRemoved, this,
+            [this, accountId](const QString &localConvId, const QString &messageId) {
+                if (!accountById(accountId))
+                    return;
+                const QString compound = accountId + QStringLiteral("/") + localConvId;
+                if (compound != m_activeConversationId)
+                    return;
+                for (int i = 0; i < m_currentConversationMessages.size(); ++i) {
+                    if (m_currentConversationMessages.at(i).messageId == messageId) {
+                        m_currentConversationMessages.removeAt(i);
+                        break;
+                    }
+                }
+                m_messageModel->removeMessageById(messageId);
+                emit messagesChanged(compound);
+            });
+
+    connect(backend, &BackendPlugin::storageChanged, this,
+            [this, accountId]() {
+                if (!accountById(accountId))
+                    return;
+                // Coalesce bursts (e.g. DC IncomingMsgBunch) into one
+                // targeted refetch per account.
+                QTimer *&timer = m_pushDebounceTimers[accountId];
+                if (!timer) {
+                    timer = new QTimer(this);
+                    timer->setSingleShot(true);
+                    timer->setInterval(300);
+                    connect(timer, &QTimer::timeout, this, [this, accountId]() {
+                        Account *account = accountById(accountId);
+                        if (!account)
+                            return;
+                        if (auto *p = dynamic_cast<IConversationProvider *>(account->backend))
+                            p->fetchConversations();
+                        if (m_activeConversationId.startsWith(accountId + QStringLiteral("/")))
+                            fetchMessages(m_activeConversationId);
+                    });
+                }
+                timer->start();
+            });
+
     connect(backend, &BackendPlugin::configured, this,
             [this](bool success) {
                 if (success) {

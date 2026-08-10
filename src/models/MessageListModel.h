@@ -30,6 +30,11 @@ public:
 
     void setMessages(const QVector<Message> &messages);
 
+    /// Incremental mutations for the push path (messageArrived /
+    /// messageRemoved) — targeted row notifications, no full reset.
+    void appendMessage(const Message &message);
+    void removeMessageById(const QString &messageId);
+
 private:
     QVector<Message> m_messages;
 };

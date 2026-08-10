@@ -1,6 +1,7 @@
 #ifndef ACCOUNTCONTROLLER_H
 #define ACCOUNTCONTROLLER_H
 
+#include <QHash>
 #include <QMap>
 #include <QObject>
 #include <QPair>
@@ -8,6 +9,8 @@
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
+
+class QTimer;
 #include "models/MessageListModel.h"
 #include "models/ConversationListModel.h"
 #include "models/AccountListModel.h"
@@ -183,6 +186,8 @@ private:
     /// yet; resolved in rebuildMergedConversations().
     QString m_pendingSelectAccount;
     void selectDefaultConversation(Account *account);
+    // Per-account debounce timers coalescing storageChanged push bursts.
+    QHash<QString, QTimer *> m_pushDebounceTimers;
 };
 
 #endif
