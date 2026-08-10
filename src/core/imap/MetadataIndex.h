@@ -49,13 +49,17 @@ public:
 
     bool open(QString *err = nullptr)
     {
+        // Refuse structurally: a keyless open would create a plaintext
+        // DB that later encrypted opens reject (HMAC failure).
+        if (m_key.isEmpty()) {
+            if (err) *err = QStringLiteral("no key (locked) — refusing keyless open");
+            return false;
+        }
         if (sqlite3_open(m_dbPath.toUtf8().constData(), &m_db) != SQLITE_OK) {
             if (err) *err = QString::fromUtf8(sqlite3_errmsg(m_db));
             return false;
         }
-        if (!m_key.isEmpty()) {
-            sqlite3_key(m_db, m_key.constData(), static_cast<int>(m_key.size()));
-        }
+        sqlite3_key(m_db, m_key.constData(), static_cast<int>(m_key.size()));
 
         // Multiple workers (fetchConversations + sync) open the same
         // file concurrently at unlock time; without a busy timeout the
