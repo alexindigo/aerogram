@@ -77,9 +77,11 @@ int main(int argc, char *argv[])
             return backend;
         });
     BackendRegistry::registerType(QStringLiteral("deltachat"),
-        [](const QVariantMap &) -> BackendPlugin * {
+        [](const QVariantMap &credentials) -> BackendPlugin * {
             auto *backend = new DeltaChatBackend();
-            backend->initialize({});
+            // Credentials may carry "qr" (dcaccount:/backup invite) and
+            // "accounts_path" overrides.
+            backend->initialize(credentials);
             return backend;
         });
 
@@ -122,15 +124,18 @@ int main(int argc, char *argv[])
         if (f.open(QIODevice::ReadOnly)) {
             const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
             for (const QJsonValue &v : doc.array()) {
-                const QJsonObject o = v.toObject();
-                QVariantMap creds;
-                creds[QStringLiteral("type")] = o.value(QStringLiteral("type")).toString();
-                creds[QStringLiteral("host")] = o.value(QStringLiteral("host")).toString();
-                creds[QStringLiteral("port")] = o.value(QStringLiteral("port")).toInt(993);
-                creds[QStringLiteral("user")] = o.value(QStringLiteral("user")).toString();
-                creds[QStringLiteral("pass")] = o.value(QStringLiteral("pass")).toString();
-                creds[QStringLiteral("tls")] = o.value(QStringLiteral("tls")).toBool(true);
-                accountSpecs.append({creds[QStringLiteral("type")].toString(), creds});
+                // Generic pass-through: credential shapes are per
+                // backend type (imap: host/user/pass; deltachat: qr).
+                // main.cpp must not know them — only imap defaults are
+                // applied for backward compatibility.
+                QVariantMap creds = v.toObject().toVariantMap();
+                if (creds.value(QStringLiteral("type")).toString() == QLatin1String("imap")) {
+                    if (!creds.contains(QStringLiteral("port")))
+                        creds[QStringLiteral("port")] = 993;
+                    if (!creds.contains(QStringLiteral("tls")))
+                        creds[QStringLiteral("tls")] = true;
+                }
+                accountSpecs.append({creds.value(QStringLiteral("type")).toString(), creds});
             }
         } else {
             qWarning().noquote() << "Cannot open accounts file:" << parser.value(accountsOpt);

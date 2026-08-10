@@ -6,6 +6,7 @@
 
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFuture>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -15,6 +16,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 
+#include <algorithm>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -80,6 +82,7 @@ public:
                          + QDir::separator() + "delta";
         }
         QDir().mkpath(accountsPath);
+        m_pendingQr = params.value(QStringLiteral("qr")).toString();
 
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("DC_ACCOUNTS_PATH", accountsPath);
@@ -89,14 +92,43 @@ public:
         if (!m_process->waitForStarted(5000))
             return false;
 
-        // Add + select account (fire and forget; result observable via
-        // future errors flowing through emit errorOccurred).
-        call(QStringLiteral("add_account"), {})
+        // Reuse an existing configured account across launches (the RPC
+        // server persists accounts under DC_ACCOUNTS_PATH); only create
+        // a fresh one when the store is empty.
+        qWarning().noquote() << "DeltaChat: initialize chain start";
+        call(QStringLiteral("get_all_account_ids"), {})
+            .then([this](QJsonValue r) {
+                const QJsonArray ids = r.toArray();
+                qWarning().noquote() << "DeltaChat: existing accounts:" << ids;
+                if (ids.isEmpty())
+                    return call(QStringLiteral("add_account"), {});
+                return QtFuture::makeReadyValueFuture(ids.first());
+            }).unwrap()
             .then([this](QJsonValue r) {
                 m_accountId = r.toInt();
+                qWarning().noquote() << "DeltaChat: selected account" << m_accountId;
                 return call(QStringLiteral("select_account"), {m_accountId});
             }).unwrap()
-            .then([](QJsonValue) {})
+            .then([this](QJsonValue) {
+                return call(QStringLiteral("is_configured"), {m_accountId});
+            }).unwrap()
+            .then([this](QJsonValue r) {
+                qWarning().noquote() << "DeltaChat: is_configured:" << r.toBool()
+                                     << "qr pending:" << !m_pendingQr.isEmpty();
+                if (r.toBool()) {
+                    // Already configured: go online and report ready.
+                    emit configured(true);
+                    startIo();
+                } else if (!m_pendingQr.isEmpty()) {
+                    // Fresh account with QR credentials (chatmail invite
+                    // or classic dcaccount: URL) — run the setup chain.
+                    setupFromQr(m_pendingQr);
+                } else {
+                    emit errorOccurred(QStringLiteral(
+                        "Delta Chat account is not configured and no "
+                        "'qr' credential was provided"));
+                }
+            })
             .onFailed([this](const std::exception &e) {
                 emit errorOccurred(QString::fromUtf8(e.what()));
             });
@@ -122,18 +154,23 @@ public:
 
     void setupFromQr(const QString &qrContent) override
     {
+        qWarning().noquote() << "DeltaChat: setupFromQr start";
         call(QStringLiteral("set_config_from_qr"), {m_accountId, qrContent})
             .then([this](QJsonValue) {
+                qWarning().noquote() << "DeltaChat: qr applied, configuring...";
                 return call(QStringLiteral("configure"), {m_accountId});
             }).unwrap()
             .then([this](QJsonValue) {
+                qWarning().noquote() << "DeltaChat: configured, starting io";
                 return call(QStringLiteral("start_io"), {m_accountId});
             }).unwrap()
             .then([this](QJsonValue) {
+                qWarning().noquote() << "DeltaChat: io started";
                 emit configured(true);
                 emit ioStarted(true, QString());
             })
             .onFailed([this](const std::exception &e) {
+                qWarning().noquote() << "DeltaChat: setupFromQr FAILED:" << e.what();
                 emit configured(false);
                 emit errorOccurred(QString::fromUtf8(e.what()));
             });
@@ -224,9 +261,11 @@ public:
                             Conversation c;
                             c.id = QString::number(ids->value(i));
                             c.kind = QStringLiteral("chat");
-                            c.name = chatObj.value("name").toString();
+                            c.name = chatObj.value(QStringLiteral("name")).toString();
                             c.preview = QString();
-                            c.unreadCount = 0;  // TODO: get_fresh_msg_cnt
+                            // freshMessageCounter rides along with the
+                            // full chat fetch — no extra RPC needed.
+                            c.unreadCount = chatObj.value(QStringLiteral("freshMessageCounter")).toInt();
                             c.lastActivity = QDateTime::currentDateTime();
                             conversations.append(c);
                             ++i;
@@ -245,24 +284,115 @@ public:
 
     void fetchMessages(const QString &conversationId) override
     {
-        // TODO: full message fetch — for now emit an empty list to
-        // clear the model. See docs/CLEANUP.md.
-        emit messagesReady(conversationId, {});
+        const int chatId = conversationId.toInt();
+        call(QStringLiteral("get_message_ids"), {m_accountId, chatId, false, false})
+            .then([this](QJsonValue r) {
+                const QJsonArray ids = r.toArray();
+                if (ids.isEmpty())
+                    return QtFuture::makeReadyValueFuture(QJsonValue(QJsonObject{}));
+                return call(QStringLiteral("get_messages"), {m_accountId, ids});
+            }).unwrap()
+            .then([this, conversationId](QJsonValue r) {
+                const QJsonObject byId = r.toObject();
+                QVector<Message> messages;
+                QVector<int> seenIds;
+                messages.reserve(byId.size());
+                // Object keys are stringified ids; sort numerically so
+                // the list lands oldest → newest.
+                QStringList keys = byId.keys();
+                std::sort(keys.begin(), keys.end(),
+                          [](const QString &a, const QString &b) {
+                              return a.toInt() < b.toInt();
+                          });
+                for (const QString &key : keys) {
+                    const QJsonObject m = byId.value(key).toObject();
+                    if (m.isEmpty())
+                        continue;
+                    Message msg;
+                    msg.messageId = key;
+                    msg.conversationId = conversationId;
+                    const QJsonObject sender = m.value(QStringLiteral("sender")).toObject();
+                    QString name = sender.value(QStringLiteral("displayName")).toString();
+                    if (name.isEmpty())
+                        name = sender.value(QStringLiteral("address")).toString();
+                    msg.sender = name;
+                    msg.date = QDateTime::fromSecsSinceEpoch(
+                        m.value(QStringLiteral("sortTimestamp")).toInteger());
+                    msg.body = m.value(QStringLiteral("text")).toString();
+                    msg.snippet = msg.body.left(120);
+                    // DC states: 10 = incoming fresh, 13 = incoming noticed.
+                    const int state = m.value(QStringLiteral("state")).toInt();
+                    msg.isUnread = (state == 10 || state == 13);
+                    const QString file = m.value(QStringLiteral("file")).toString();
+                    if (!file.isEmpty()) {
+                        AttachmentMeta a;
+                        a.index = 0;  // DC: one file per message
+                        a.filename = m.value(QStringLiteral("fileName")).toString();
+                        a.mimeType = m.value(QStringLiteral("fileMime")).toString();
+                        a.size = m.value(QStringLiteral("fileBytes")).toInteger();
+                        msg.attachments.append(a);
+                    }
+                    messages.append(msg);
+                    seenIds.append(key.toInt());
+                }
+                emit messagesReady(conversationId, messages);
+
+                // DC semantics: viewing a chat marks it seen. Refresh
+                // the chat list afterwards so unread badges clear.
+                if (!seenIds.isEmpty()) {
+                    call(QStringLiteral("markseen_msgs"),
+                         {m_accountId, QJsonArray::fromVariantList(
+                             QVariantList(seenIds.begin(), seenIds.end()))})
+                        .then([this](QJsonValue) {
+                            fetchConversations();
+                        })
+                        .onFailed([this](const std::exception &e) {
+                            emit errorOccurred(QString::fromUtf8(e.what()));
+                        });
+                }
+            })
+            .onFailed([this](const std::exception &e) {
+                emit errorOccurred(QString::fromUtf8(e.what()));
+            });
     }
 
     void fetchMessageBody(const QString &conversationId, const QString &messageId) override
     {
-        // TODO: dc_get_msg body extraction. See docs/CLEANUP.md.
-        emit messageBodyReady(conversationId, messageId, QString());
+        // Text rides along in the message object — a single-id
+        // get_messages is the whole body fetch.
+        call(QStringLiteral("get_messages"),
+             {m_accountId, QJsonArray{messageId.toInt()}})
+            .then([this, conversationId, messageId](QJsonValue r) {
+                const QJsonObject m = r.toObject().value(messageId).toObject();
+                emit messageBodyReady(conversationId, messageId,
+                                      m.value(QStringLiteral("text")).toString());
+            })
+            .onFailed([this](const std::exception &e) {
+                emit errorOccurred(QString::fromUtf8(e.what()));
+            });
     }
 
     void saveAttachment(const QString &messageId, int partIndex,
                         const QString &destinationPath) override
     {
-        // TODO: dc_get_msg blob save. See docs/CLEANUP.md.
-        Q_UNUSED(partIndex);
-        Q_UNUSED(destinationPath);
-        emit attachmentSaved(false, messageId, QString());
+        Q_UNUSED(partIndex);  // DC: one file per message
+        call(QStringLiteral("get_messages"),
+             {m_accountId, QJsonArray{messageId.toInt()}})
+            .then([this, messageId, destinationPath](QJsonValue r) {
+                const QJsonObject m = r.toObject().value(messageId).toObject();
+                const QString file = m.value(QStringLiteral("file")).toString();
+                if (file.isEmpty()) {
+                    emit attachmentSaved(false, messageId, QString());
+                    return;
+                }
+                QFile::remove(destinationPath);  // copy() refuses to overwrite
+                const bool ok = QFile::copy(file, destinationPath);
+                emit attachmentSaved(ok, messageId, ok ? destinationPath : QString());
+            })
+            .onFailed([this, messageId](const std::exception &e) {
+                emit errorOccurred(QString::fromUtf8(e.what()));
+                emit attachmentSaved(false, messageId, QString());
+            });
     }
 
     // -----------------------------------------------------------------
@@ -275,6 +405,9 @@ public:
              {m_accountId, conversationId.toInt(), text})
             .then([this, conversationId](QJsonValue) {
                 emit messageSent(true, conversationId);
+                // The sent message exists immediately — refetch so the
+                // open thread shows it without waiting for IO events.
+                fetchMessages(conversationId);
             })
             .onFailed([this, conversationId](const std::exception &e) {
                 emit errorOccurred(QString::fromUtf8(e.what()));
@@ -381,6 +514,7 @@ private:
     QProcess *m_process;
     int m_accountId = 0;
     int m_nextId = 1;
+    QString m_pendingQr;
     QHash<int, std::shared_ptr<QPromise<QJsonValue>>> m_pending;
     QByteArray m_buffer;
 };
