@@ -7,6 +7,9 @@
 #include <QFuture>
 #include <QJsonObject>
 
+#include <atomic>
+#include <thread>
+
 // C ABI of aerogram-proton-core (Rust staticlib). All payloads are
 // JSON strings; results are {"ok": …} / {"err": …}.
 struct ProtonCore;
@@ -71,6 +74,13 @@ private:
     int m_labelRetries = 0;        // post-login label sync patience
     QVariantMap m_credentials;
     QString m_dataDir;
+
+    // Push: one dedicated thread long-polls proton_call("wait_event")
+    // (2s timeout inside) and emits storageChanged on non-empty
+    // batches. The short timeout bounds shutdown() join time.
+    void startEventLoop();
+    std::thread m_eventThread;
+    std::atomic<bool> m_eventThreadStop{false};
 };
 
 #endif

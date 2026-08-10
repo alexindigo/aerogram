@@ -75,6 +75,12 @@ bool ProtonBackend::initialize(const QVariantMap &params)
 
 void ProtonBackend::shutdown()
 {
+    // Stop the event thread BEFORE freeing the core: it calls into the
+    // core continuously. The 2s wait_event timeout bounds the join.
+    if (m_eventThread.joinable()) {
+        m_eventThreadStop = true;
+        m_eventThread.join();
+    }
     if (m_core) {
         proton_core_free(m_core);
         m_core = nullptr;
@@ -87,6 +93,29 @@ void ProtonBackend::purgeLocalData()
     // session DBs open).
     if (!m_dataDir.isEmpty())
         QDir(m_dataDir).removeRecursively();
+}
+
+void ProtonBackend::startEventLoop()
+{
+    if (m_eventThread.joinable())
+        return;
+    m_eventThreadStop = false;
+    m_eventThread = std::thread([this] {
+        while (!m_eventThreadStop) {
+            char *raw = proton_call(m_core, "wait_event",
+                                    R"({"timeout_ms": 2000})");
+            if (m_eventThreadStop)
+                break;
+            QJsonValue result;
+            try {
+                result = parseResult(raw);
+            } catch (...) {
+                continue;  // transient parse/core hiccup — keep polling
+            }
+            if (!result.toArray().isEmpty())
+                emit storageChanged();
+        }
+    });
 }
 
 void ProtonBackend::startIo()
@@ -169,6 +198,7 @@ void ProtonBackend::configure(const QVariantMap &credentials)
                     m_ioRequested = false;
                     emit ioStarted(true, QString());
                 }
+                startEventLoop();
                 fetchConversations();
             } else if (state == QLatin1String("totp")) {
                 emit errorOccurred(QStringLiteral(

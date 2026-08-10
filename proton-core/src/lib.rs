@@ -119,15 +119,56 @@ impl KeyChain for FileKeyChain {
 struct CoreState {
     login_flow: Option<LoginFlow>,
     user_ctx: Option<Arc<proton_mail_common::MailUserContext>>,
+    watchers_started: bool,
+}
+
+/// Shared with the 'static watcher tasks spawned after login.
+#[derive(Clone, Default)]
+struct EventBus {
+    queue: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    notify: Arc<tokio::sync::Notify>,
 }
 
 pub struct ProtonCore {
     ctx: Arc<MailContext>,
     state: Mutex<CoreState>,
+    bus: EventBus,
     /// Per-label budget for forced re-sync when a label comes back
     /// empty right after its first sync (burned-initialized race with
     /// the SDK's initial event sync). label_id → attempts used.
     empty_sync_retries: Mutex<std::collections::HashMap<u64, u32>>,
+}
+
+/// Spawn stash watchers after login/restore. The SDK's event poll
+/// writes incoming changes into the local DB; watchers tick on writes.
+/// We coalesce to table-level ticks — the C++ side invalidates and
+/// refetches (payload push needs row diffing; follow-up).
+fn spawn_watchers(core: &ProtonCore, user_ctx: Arc<proton_mail_common::MailUserContext>) {
+    let stash = user_ctx.user_stash();
+
+    macro_rules! watch {
+        ($model:ty, $tag:literal) => {{
+            let stash = stash.clone();
+            let bus = core.bus.clone();
+            runtime().spawn(async move {
+                let Ok(handle) = <$model>::watch(&stash).await else {
+                    eprintln!("proton: watcher for {} failed to start", $tag);
+                    return;
+                };
+                loop {
+                    if handle.next().await.is_err() {
+                        break; // watcher dropped (logout/shutdown)
+                    }
+                    bus.queue.lock().unwrap().push_back($tag.to_string());
+                    bus.notify.notify_one();
+                }
+            });
+        }};
+    }
+
+    // Message table ticks drive the prototype's invalidation; label
+    // counters/conversation watchers are a follow-up.
+    watch!(MailMessage, "messages");
 }
 
 async fn create_context(data_dir: &Path) -> Result<Arc<MailContext>, String> {
@@ -244,6 +285,7 @@ pub unsafe extern "C" fn proton_core_new(data_dir: *const c_char) -> *mut Proton
         Ok(ctx) => Box::into_raw(Box::new(ProtonCore {
             ctx,
             state: Mutex::new(CoreState::default()),
+            bus: EventBus::default(),
             empty_sync_retries: Mutex::new(std::collections::HashMap::new()),
         })),
         Err(e) => {
@@ -320,6 +362,7 @@ async fn dispatch(core: &ProtonCore, method: &str, params: Value) -> Result<Valu
         "list_labels" => list_labels(core).await,
         "list_messages" => list_messages(core, params).await,
         "message_body" => message_body(core, params).await,
+        "wait_event" => wait_event(core, params).await,
         _ => Err(format!("unknown method: {method}")),
     }
 }
@@ -356,7 +399,14 @@ async fn finish_login(core: &ProtonCore) -> Result<Value, String> {
         .await
         .map(|u| u.email)
         .unwrap_or_default();
-    core.state.lock().await.user_ctx = Some(user_ctx);
+    {
+        let mut state = core.state.lock().await;
+        if !state.watchers_started {
+            state.watchers_started = true;
+            spawn_watchers(core, user_ctx.clone());
+        }
+        state.user_ctx = Some(user_ctx);
+    }
     Ok(json!({ "state": "ok", "addr": addr }))
 }
 
@@ -445,7 +495,14 @@ async fn restore_session(core: &ProtonCore) -> Result<Value, String> {
         return Ok(json!({ "state": "none" }));
     };
     let addr = user_ctx.user().await.map(|u| u.email).unwrap_or_default();
-    core.state.lock().await.user_ctx = Some(user_ctx);
+    {
+        let mut state = core.state.lock().await;
+        if !state.watchers_started {
+            state.watchers_started = true;
+            spawn_watchers(core, user_ctx.clone());
+        }
+        state.user_ctx = Some(user_ctx);
+    }
     Ok(json!({ "state": "ok", "addr": addr }))
 }
 
@@ -622,4 +679,35 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         "text": text,
         "mime_type": format!("{:?}", body.mime_type),
     }))
+}
+
+/// Long-poll: block until at least one watcher tick exists or the
+/// timeout elapses, then drain the queue. Returns a (possibly empty)
+/// array of table tags, deduplicated — e.g. ["messages"].
+async fn wait_event(core: &ProtonCore, params: Value) -> Result<Value, String> {
+    let timeout_ms = params
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(2000);
+
+    // If events are already queued, return immediately; otherwise wait
+    // for the next tick.
+    let pending = !core.bus.queue.lock().unwrap().is_empty();
+    if !pending {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            core.bus.notify.notified(),
+        )
+        .await;
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut q = core.bus.queue.lock().unwrap();
+    while let Some(tag) = q.pop_front() {
+        seen.insert(tag);
+    }
+    drop(q);
+    Ok(Value::Array(
+        seen.into_iter().map(Value::String).collect(),
+    ))
 }
