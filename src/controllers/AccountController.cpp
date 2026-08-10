@@ -314,10 +314,16 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
     a.credentials = credentials;
 
     // Label: user@host when the credential shape has both (imap-like);
-    // otherwise the type name (deltachat/mock).
+    // a user that is itself a full address (proton) as-is; otherwise
+    // the type name (deltachat/mock).
     const QString user = credentials.value(QStringLiteral("user")).toString();
     const QString host = credentials.value(QStringLiteral("host")).toString();
-    a.label = (!user.isEmpty() && !host.isEmpty()) ? user + QLatin1Char('@') + host : type;
+    if (!user.isEmpty() && !host.isEmpty())
+        a.label = user + QLatin1Char('@') + host;
+    else if (user.contains(QLatin1Char('@')))
+        a.label = user;
+    else
+        a.label = type;
 
     // Sketch format: <backend_id>#<backend> — e.g. alice@gmail.com#imap
     a.id = a.label + QLatin1Char('#') + type;

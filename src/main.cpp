@@ -14,6 +14,9 @@
 #include "core/plugin/DeltaChatBackend.h"
 #include "core/plugin/MockBackend.h"
 #include "core/imap/ImapBackend.h"
+#ifdef AEROGRAM_HAVE_PROTON
+#include "core/proton/ProtonBackend.h"
+#endif
 #include "controllers/AccountController.h"
 #include "core/ipc/IpcServer.h"
 
@@ -89,6 +92,27 @@ int main(int argc, char *argv[])
             backend->initialize({});
             return backend;
         });
+#ifdef AEROGRAM_HAVE_PROTON
+    BackendRegistry::registerType(QStringLiteral("proton"),
+        [](const QVariantMap &credentials) -> BackendPlugin * {
+            auto *backend = new ProtonBackend();
+            backend->initialize(credentials);
+            return backend;
+        },
+        {
+            QStringLiteral(),  // type — filled by registerType
+            QStringLiteral("Proton Mail"),
+            QStringLiteral("email"),
+            QStringLiteral("Direct Proton API (no Bridge). Use your "
+                           "Proton login; add a fresh 6-digit code if "
+                           "2FA is on."),
+            {
+                {QStringLiteral("user"), QStringLiteral("Proton address"), QStringLiteral("you@proton.me"), QStringLiteral("text"), true},
+                {QStringLiteral("pass"), QStringLiteral("Password"), QStringLiteral("Proton account password"), QStringLiteral("password"), true},
+                {QStringLiteral("totp"), QStringLiteral("2FA code"), QStringLiteral("6-digit code (only if 2FA is on)"), QStringLiteral("text"), false},
+            },
+        });
+#endif
     BackendRegistry::registerType(QStringLiteral("deltachat"),
         [](const QVariantMap &credentials) -> BackendPlugin * {
             auto *backend = new DeltaChatBackend();
