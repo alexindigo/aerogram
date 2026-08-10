@@ -59,6 +59,11 @@ public:
 
     bool initialize(const QVariantMap &params) override
     {
+        // shutdown() is not terminal: resetApp() calls shutdown() +
+        // initialize() on the same instance. Re-arm the lifecycle flags.
+        m_shuttingDown = false;
+        m_syncInFlight = false;
+
         // Storage paths are computed in configure() once the account
         // identity (user@host) is known — per-account separation.
         m_baseRoot = params.value(QStringLiteral("storage_root")).toString();
@@ -132,6 +137,10 @@ public:
 
     void startIo() override
     {
+        if (m_shuttingDown) {
+            emit ioStarted(false, QStringLiteral("backend is shutting down"));
+            return;
+        }
         // Verify credentials with a LIST before declaring IO started.
         const QString host = m_host, user = m_user, pass = m_pass;
         const int port = m_port;
