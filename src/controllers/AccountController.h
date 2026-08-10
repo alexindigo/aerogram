@@ -36,9 +36,8 @@ class AccountController : public QObject
     Q_PROPERTY(QString activeAccountId READ activeAccountId NOTIFY activeAccountIdChanged)
     Q_PROPERTY(QString activeConversationId READ activeConversationId NOTIFY activeConversationIdChanged)
     Q_PROPERTY(QString activeMessageId READ activeMessageId NOTIFY activeMessageIdChanged)
-    Q_PROPERTY(QVariantMap activeMessage READ activeMessage NOTIFY activeMessageChanged)
-    Q_PROPERTY(QString activeMessageBody READ activeMessageBody NOTIFY activeMessageBodyChanged)
-    Q_PROPERTY(QVariantList activeMessageAttachments READ activeMessageAttachments NOTIFY activeMessageAttachmentsChanged)
+    Q_PROPERTY(QVariantList activeMessages READ activeMessages NOTIFY activeMessagesChanged)
+    Q_PROPERTY(QVariantList panelLayout READ panelLayout NOTIFY panelLayoutChanged)
     Q_PROPERTY(bool isLocked READ isLocked NOTIFY isLockedChanged)
     Q_PROPERTY(QString lockStatusText READ lockStatusText NOTIFY lockStatusTextChanged)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
@@ -63,9 +62,8 @@ public:
     QString activeAccountId() const;
     QString activeConversationId() const;
     QString activeMessageId() const;
-    QVariantMap activeMessage() const;
-    QString activeMessageBody() const;
-    QVariantList activeMessageAttachments() const;
+    QVariantList activeMessages() const;
+    QVariantList panelLayout() const;
     bool isLocked() const;
     QString lockStatusText() const;
     bool vaultExists() const;
@@ -97,6 +95,7 @@ public slots:
     void setActiveView(const QString &view);
     void selectAccount(const QString &accountId);
     void ensureActiveAccount();
+    void setWindowSize(int width, int height);
 
 signals:
     void configStatusChanged();
@@ -104,9 +103,8 @@ signals:
     void activeAccountIdChanged();
     void activeConversationIdChanged();
     void activeMessageIdChanged();
-    void activeMessageChanged();
-    void activeMessageBodyChanged();
-    void activeMessageAttachmentsChanged();
+    void activeMessagesChanged();
+    void panelLayoutChanged();
     void conversationsChanged();
     void messagesChanged(const QString &conversationId);
     void messageSent(bool ok, const QString &conversationId);
@@ -128,9 +126,8 @@ private:
     void setActiveAccountId(const QString &accountId);
     void setActiveConversationId(const QString &conversationId);
     void setActiveMessageId(const QString &messageId);
-    void setActiveMessage(const QVariantMap &message);
-    void setActiveMessageBody(const QString &body);
-    void setActiveMessageAttachments(const QVariantList &attachments);
+    void setActiveMessages(const QVariantList &messages);
+    void recomputeLayout();
 
     void registerAccount(const QString &type, const QVariantMap &credentials,
                          BackendPlugin *backend);
@@ -152,15 +149,16 @@ private:
     ConversationListModel *m_conversationModel;
     AccountListModel *m_accountsModel;
     QString m_iconPackDir;
-    QVector<Message> m_activeMessages;
+    QVector<Message> m_currentConversationMessages;
     QString m_configStatus;
     QString m_activeView;
     QString m_activeAccountId;
     QString m_activeConversationId;
     QString m_activeMessageId;
-    QVariantMap m_activeMessage;
-    QString m_activeMessageBody;
-    QVariantList m_activeMessageAttachments;
+    QVariantList m_activeMessages;
+    QVariantList m_panelLayout;
+    int m_windowWidth = 1024;
+    int m_windowHeight = 768;
     QString m_attachmentSaveStatus;
     MasterKeyManager *m_vault;
     QSet<QString> m_pendingAdds;

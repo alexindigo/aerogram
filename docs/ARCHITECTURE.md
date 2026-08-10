@@ -151,6 +151,15 @@ failure mode Pattern 2 prevents.
 - The controller is the single source of truth for all semantic
   state.
 
+### Panel independence
+
+Panels are independent components. The controller decides which panels
+show (via `activePanels`); `main.qml` instantiates them via `Loader`s
+keyed on that state. No panel references another — a panel may be its
+own window later without changing its code. Composition containers that
+assume co-location (a StackLayout of fixed pages, a view nesting
+another view) are forbidden: they presume what the controller owns.
+
 ---
 
 ## Pattern 3: Behind-the-Scenes IPC Wiring

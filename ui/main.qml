@@ -10,49 +10,80 @@ Kirigami.ApplicationWindow {
     height: 768
     title: "Aerogram"
 
-    readonly property var viewMap: ({ "email": 0, "chats": 1, "settings": 2 })
+    // The controller owns panel position and size (panelLayout model);
+    // this window only binds to it. Panels are independent components —
+    // no panel references another, and a future second window is just
+    // another host binding the same model.
+    readonly property var panelSources: ({
+        "sidebar": "components/Sidebar.qml",
+        "email-conversations": "views/EmailConversationsPanel.qml",
+        "email-messages": "views/EmailMessagesPanel.qml",
+        "chat-conversations": "views/ChatView.qml",
+        "settings": "views/SettingsView.qml"
+    })
 
-    RowLayout {
-        anchors.fill: parent
-        spacing: 0
+    onWidthChanged: accountController.setWindowSize(width, height)
+    onHeightChanged: accountController.setWindowSize(width, height)
+    Component.onCompleted: accountController.setWindowSize(width, height)
 
-        Sidebar {
-            Layout.fillHeight: true
-
-            onSettingsRequested: accountController.setActiveView("settings")
-            onAddAccountRequested: addAccountDialog.open()
-            onAccountSelected: (id) => accountController.selectAccount(id)
+    function wirePanel(id, item) {
+        if (id === "sidebar") {
+            item.settingsRequested.connect(function() {
+                accountController.setActiveView("settings")
+            })
+            item.addAccountRequested.connect(function() { addAccountDialog.open() })
+            item.accountSelected.connect(function(accId) {
+                accountController.selectAccount(accId)
+            })
+        } else if (id === "email-conversations") {
+            item.messageSelected.connect(function(mid) {
+                accountController.selectMessage(mid)
+            })
+        } else if (id === "email-messages") {
+            item.attachmentSaveRequested.connect(function(mid, idx, path) {
+                accountController.saveAttachment(mid, idx, path)
+            })
+        } else if (id === "chat-conversations") {
+            item.chatSelected.connect(function(cid) {
+                accountController.fetchMessages(cid)
+                accountController.setActiveView("email")
+            })
+        } else if (id === "settings") {
+            item.setupFromQrRequested.connect(function(qr) {
+                accountController.setupFromQr(qr)
+            })
+            item.getBackupFromQrRequested.connect(function(qr) {
+                accountController.getBackupFromQr(qr)
+            })
+            item.resetApplicationRequested.connect(function() {
+                accountController.resetApp()
+            })
         }
+    }
 
-        StackLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            currentIndex: root.viewMap[accountController.activeView] ?? 0
+    Repeater {
+        model: accountController.panelLayout
+        delegate: Item {
+            x: modelData.x
+            y: modelData.y
+            width: modelData.width
+            height: modelData.height
+            visible: modelData.visible
 
-            EmailInboxView {
-                onMessageSelected: (messageId) => {
-                    accountController.selectMessage(messageId)
-                }
-                onAttachmentSaveRequested: (messageId, partIndex, path) => {
-                    accountController.saveAttachment(messageId, partIndex, path)
-                }
+            // Panel content (Loader) or a separator divider.
+            Loader {
+                anchors.fill: parent
+                active: modelData.type === "panel"
+                source: modelData.type === "panel"
+                        ? root.panelSources[modelData.id] : ""
+                onLoaded: root.wirePanel(modelData.id, item)
             }
 
-            ChatView {
-                onChatSelected: (conversationId) => {
-                    accountController.fetchMessages(conversationId)
-                    accountController.setActiveView("email")
-                }
-            }
-
-            SettingsView {
-                onSetupFromQrRequested: (qrContent) => {
-                    accountController.setupFromQr(qrContent)
-                }
-                onGetBackupFromQrRequested: (qrText) => {
-                    accountController.getBackupFromQr(qrText)
-                }
-                onResetApplicationRequested: accountController.resetApp()
+            Rectangle {
+                anchors.fill: parent
+                visible: modelData.type === "separator"
+                color: Kirigami.Theme.disabledTextColor
+                opacity: 0.3
             }
         }
     }

@@ -28,9 +28,13 @@ AccountController::AccountController(const QList<QPair<QString, QVariantMap>> &a
     , m_conversationModel(new ConversationListModel(this))
     , m_accountsModel(new AccountListModel(this))
     , m_configStatus(QStringLiteral("Not configured"))
-    , m_activeView(QStringLiteral("email"))
+    ,     m_activeView(QStringLiteral("email"))
     , m_vault(vault)
 {
+    // Compute the initial panel layout for the initial view
+    // (setActiveView only fires on CHANGE, so the constructor must).
+    recomputeLayout();
+
     // Construction is registry-driven: specs are (type, credentials);
     // the controller never constructs a concrete backend itself.
     for (const auto &spec : accountSpecs) {
@@ -69,9 +73,8 @@ QString AccountController::activeView() const { return m_activeView; }
 QString AccountController::activeAccountId() const { return m_activeAccountId; }
 QString AccountController::activeConversationId() const { return m_activeConversationId; }
 QString AccountController::activeMessageId() const { return m_activeMessageId; }
-QVariantMap AccountController::activeMessage() const { return m_activeMessage; }
-QString AccountController::activeMessageBody() const { return m_activeMessageBody; }
-QVariantList AccountController::activeMessageAttachments() const { return m_activeMessageAttachments; }
+QVariantList AccountController::activeMessages() const { return m_activeMessages; }
+QVariantList AccountController::panelLayout() const { return m_panelLayout; }
 
 bool AccountController::isLocked() const { return m_vault ? m_vault->isLocked() : false; }
 QString AccountController::lockStatusText() const { return m_vault ? m_vault->statusText() : QString(); }
@@ -119,6 +122,97 @@ void AccountController::setActiveView(const QString &view)
     if (m_activeView != view) {
         m_activeView = view;
         emit activeViewChanged();
+        recomputeLayout();
+    }
+}
+
+/// \brief Controller-owned panel layout: position and size per panel,
+///        in window pixels. main.qml pushes window size; the controller
+///        owns the geometry. A future second window is another host
+///        binding the same model.
+void AccountController::setWindowSize(int width, int height)
+{
+    if (m_windowWidth != width || m_windowHeight != height) {
+        m_windowWidth = width;
+        m_windowHeight = height;
+        recomputeLayout();
+    }
+}
+
+void AccountController::recomputeLayout()
+{
+    constexpr int sidebarWidth = 70;
+    constexpr int listWidth = 380;
+    constexpr int sepWidth = 1;
+    // Below this width the email view stacks: conversations on top
+    // (35%), messages below (65%), with a horizontal divider.
+    constexpr int narrowBelow = 700;
+
+    QVariantList rows;
+    int sepN = 0;
+    auto add = [&rows](const QString &id, const QString &type,
+                       int x, int y, int w, int h) {
+        QVariantMap m;
+        m[QStringLiteral("id")] = id;
+        m[QStringLiteral("type")] = type;
+        m[QStringLiteral("x")] = x;
+        m[QStringLiteral("y")] = y;
+        m[QStringLiteral("width")] = w;
+        m[QStringLiteral("height")] = h;
+        m[QStringLiteral("visible")] = true;
+        rows.append(m);
+    };
+    auto addVsep = [&](int sx) {
+        add(QStringLiteral("sep-%1").arg(sepN++), QStringLiteral("separator"),
+            sx, 0, sepWidth, m_windowHeight);
+    };
+    auto addHsep = [&](int sx, int sy, int sw) {
+        add(QStringLiteral("sep-%1").arg(sepN++), QStringLiteral("separator"),
+            sx, sy, sw, sepWidth);
+    };
+
+    // Sidebar, then thin separators between content panels (Airmail-style
+    // dividers). All geometry is controller-owned.
+    int x = 0;
+    add(QStringLiteral("sidebar"), QStringLiteral("panel"), x, 0, sidebarWidth,
+        m_windowHeight);
+    x += sidebarWidth;
+
+    const bool narrow = m_windowWidth < narrowBelow;
+
+    if (m_activeView == QLatin1String("chats") ||
+        m_activeView == QLatin1String("settings")) {
+        const QString id = m_activeView == QLatin1String("chats")
+            ? QStringLiteral("chat-conversations") : QStringLiteral("settings");
+        addVsep(x);
+        x += sepWidth;
+        add(id, QStringLiteral("panel"), x, 0, m_windowWidth - x, m_windowHeight);
+    } else if (narrow) {
+        // Stacked: conversations 35% above, messages 65% below.
+        addVsep(x);
+        x += sepWidth;
+        const int contentW = m_windowWidth - x;
+        const int topH = m_windowHeight * 35 / 100;
+        add(QStringLiteral("email-conversations"), QStringLiteral("panel"),
+            x, 0, contentW, topH);
+        addHsep(x, topH, contentW);
+        add(QStringLiteral("email-messages"), QStringLiteral("panel"),
+            x, topH + sepWidth, contentW, m_windowHeight - topH - sepWidth);
+    } else {
+        addVsep(x);
+        x += sepWidth;
+        add(QStringLiteral("email-conversations"), QStringLiteral("panel"),
+            x, 0, listWidth, m_windowHeight);
+        x += listWidth;
+        addVsep(x);
+        x += sepWidth;
+        add(QStringLiteral("email-messages"), QStringLiteral("panel"),
+            x, 0, m_windowWidth - x, m_windowHeight);
+    }
+
+    if (m_panelLayout != rows) {
+        m_panelLayout = rows;
+        emit panelLayoutChanged();
     }
 }
 
@@ -146,24 +240,10 @@ void AccountController::setActiveMessageId(const QString &messageId)
     }
 }
 
-void AccountController::setActiveMessage(const QVariantMap &message)
+void AccountController::setActiveMessages(const QVariantList &messages)
 {
-    m_activeMessage = message;
-    emit activeMessageChanged();
-}
-
-void AccountController::setActiveMessageBody(const QString &body)
-{
-    if (m_activeMessageBody != body) {
-        m_activeMessageBody = body;
-        emit activeMessageBodyChanged();
-    }
-}
-
-void AccountController::setActiveMessageAttachments(const QVariantList &attachments)
-{
-    m_activeMessageAttachments = attachments;
-    emit activeMessageAttachmentsChanged();
+    m_activeMessages = messages;
+    emit activeMessagesChanged();
 }
 
 // ---------------------------------------------------------------------
@@ -267,7 +347,7 @@ void AccountController::connectBackend(const Account &account)
                 QVector<Message> fixed = msgs;
                 for (Message &m : fixed)
                     m.conversationId = compound;
-                m_activeMessages = fixed;
+                m_currentConversationMessages = fixed;
                 m_messageModel->setMessages(fixed);
                 // A non-empty landing resets the empty-refetch budget.
                 if (!fixed.isEmpty())
@@ -283,8 +363,19 @@ void AccountController::connectBackend(const Account &account)
     connect(backend, &BackendPlugin::messageBodyReady, this,
             [this, accountId](const QString &localConvId, const QString &messageId,
                               const QString &body) {
-                if (messageId == m_activeMessageId)
-                    setActiveMessageBody(body);
+                if (messageId == m_activeMessageId) {
+                    // Update the entry's body in the active list.
+                    QVariantList msgs = m_activeMessages;
+                    for (int i = 0; i < msgs.size(); ++i) {
+                        QVariantMap e = msgs[i].toMap();
+                        if (e.value(QStringLiteral("messageId")).toString() == messageId) {
+                            e[QStringLiteral("body")] = body;
+                            msgs[i] = e;
+                            setActiveMessages(msgs);
+                            break;
+                        }
+                    }
+                }
                 emit messageBodyReady(accountId + QStringLiteral("/") + localConvId,
                                       messageId, body);
             });
@@ -445,16 +536,19 @@ void AccountController::fetchMessageBody(const QString &conversationId, const QS
 void AccountController::selectMessage(const QString &messageId)
 {
     setActiveMessageId(messageId);
-    setActiveMessageBody(QString());
 
-    QVariantMap meta;
+    // The panel contract is a LIST (a thread, later) — v1 carries one.
+    QVariantMap entry;
+    entry[QStringLiteral("messageId")] = messageId;
+    entry[QStringLiteral("body")] = QString();
+
     QVariantList atts;
-    for (const Message &m : m_activeMessages) {
+    for (const Message &m : m_currentConversationMessages) {
         if (m.messageId != messageId)
             continue;
-        meta[QStringLiteral("subject")] = m.subject;
-        meta[QStringLiteral("sender")] = m.sender;
-        meta[QStringLiteral("date")] = m.date;
+        entry[QStringLiteral("subject")] = m.subject;
+        entry[QStringLiteral("sender")] = m.sender;
+        entry[QStringLiteral("date")] = m.date;
         for (const AttachmentMeta &a : m.attachments) {
             QVariantMap am;
             am[QStringLiteral("index")] = a.index;
@@ -465,8 +559,8 @@ void AccountController::selectMessage(const QString &messageId)
         }
         break;
     }
-    setActiveMessage(meta);
-    setActiveMessageAttachments(atts);
+    entry[QStringLiteral("attachments")] = atts;
+    setActiveMessages({entry});
 
     if (!m_activeConversationId.isEmpty())
         fetchMessageBody(m_activeConversationId, messageId);
@@ -841,15 +935,13 @@ void AccountController::resetApp()
     m_messageModel->setMessages({});
     m_conversationModel->setConversations({});
     m_conversationsByAccount.clear();
-    m_activeMessages.clear();
+    m_currentConversationMessages.clear();
     m_autoSelected = false;
     setConfigStatus(QStringLiteral("Not configured"));
     setActiveAccountId(QString());
     setActiveConversationId(QString());
     setActiveMessageId(QString());
-    setActiveMessage({});
-    setActiveMessageBody(QString());
-    setActiveMessageAttachments({});
+    setActiveMessages({});
     fetchConversations();
 }
 

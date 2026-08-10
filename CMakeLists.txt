@@ -44,7 +44,8 @@ qt_add_qml_module(aerogram
     VERSION 0.1
     QML_FILES
         ui/main.qml
-        ui/views/EmailInboxView.qml
+        ui/views/EmailConversationsPanel.qml
+        ui/views/EmailMessagesPanel.qml
         ui/views/ChatView.qml
         ui/views/SettingsView.qml
         ui/components/Sidebar.qml
