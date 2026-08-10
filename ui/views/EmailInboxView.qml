@@ -13,9 +13,6 @@ Kirigami.Page {
     signal messageSelected(string messageId)
     signal attachmentSaveRequested(string messageId, int partIndex, string path)
 
-    // Set from main.qml's wiring of accountController.attachmentSaved.
-    property string saveStatusText: ""
-
     RowLayout {
         anchors.fill: parent
         spacing: 0
@@ -252,7 +249,7 @@ Kirigami.Page {
 
                 Label {
                     visible: text.length > 0
-                    text: inboxView.saveStatusText
+                    text: accountController.attachmentSaveStatus
                     font.pixelSize: 11
                     color: Kirigami.Theme.disabledTextColor
                 }

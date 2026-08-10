@@ -46,6 +46,7 @@ class AccountController : public QObject
     Q_PROPERTY(bool hasEncryptedBackend READ hasEncryptedBackend NOTIFY backendsChanged)
     Q_PROPERTY(bool hasNoAccounts READ hasNoAccounts NOTIFY backendsChanged)
     Q_PROPERTY(bool showLockOverlay READ showLockOverlay NOTIFY lockOverlayVisibilityChanged)
+    Q_PROPERTY(QString attachmentSaveStatus READ attachmentSaveStatus NOTIFY attachmentSaveStatusChanged)
 
 public:
     explicit AccountController(const QList<QPair<QString, QVariantMap>> &accountSpecs,
@@ -72,6 +73,7 @@ public:
     bool hasEncryptedBackend() const;
     bool hasNoAccounts() const;
     bool showLockOverlay() const;
+    QString attachmentSaveStatus() const;
 
 public slots:
     void fetchConversations();
@@ -119,6 +121,7 @@ signals:
     void vaultStateChanged();
     void backendsChanged();
     void lockOverlayVisibilityChanged();
+    void attachmentSaveStatusChanged();
 
 private:
     void setConfigStatus(const QString &status);
@@ -158,6 +161,7 @@ private:
     QVariantMap m_activeMessage;
     QString m_activeMessageBody;
     QVariantList m_activeMessageAttachments;
+    QString m_attachmentSaveStatus;
     MasterKeyManager *m_vault;
     QSet<QString> m_pendingAdds;
     QString m_emptyRefetchId;

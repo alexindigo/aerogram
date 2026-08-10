@@ -97,6 +97,11 @@ bool AccountController::showLockOverlay() const
     return isLocked() && (vaultExists() || hasEncryptedBackend() || hasNoAccounts());
 }
 
+QString AccountController::attachmentSaveStatus() const
+{
+    return m_attachmentSaveStatus;
+}
+
 // ---------------------------------------------------------------------
 // Property setters
 // ---------------------------------------------------------------------
@@ -286,6 +291,9 @@ void AccountController::connectBackend(const Account &account)
 
     connect(backend, &BackendPlugin::attachmentSaved, this,
             [this](bool ok, const QString &messageId, const QString &path) {
+                m_attachmentSaveStatus = ok ? QStringLiteral("Saved to ") + path
+                                            : QStringLiteral("Save failed");
+                emit attachmentSaveStatusChanged();
                 emit attachmentSaved(ok, messageId, path);
             });
 
