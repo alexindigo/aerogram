@@ -1250,6 +1250,12 @@ void AccountController::selectAccount(const QString &accountId)
     } else {
         selectDefaultConversation(account);
     }
+
+    // Poll-based backends (IMAP): switching to an account is the moment
+    // freshness matters most — sync immediately instead of waiting out
+    // the poll interval. Push-capable backends don't implement this.
+    if (auto *s = dynamic_cast<ISyncable *>(account ? account->backend : nullptr))
+        s->syncNow();
 }
 
 /// \brief Pick a sensible conversation for an email-family account:

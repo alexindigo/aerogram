@@ -34,7 +34,8 @@ class ImapBackend : public BackendPlugin,
                     public IConversationProvider,
                     public IMessageProvider,
                     public ICredentialsSetup,
-                    public IMasterKeyAware
+                    public IMasterKeyAware,
+                    public ISyncable
 {
     Q_OBJECT
 
@@ -328,7 +329,7 @@ public:
     }
 
 private slots:
-    void syncNow()
+    void syncNow() override
     {
         if (m_syncInFlight)
             return;

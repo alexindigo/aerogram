@@ -73,4 +73,14 @@ public:
     virtual void wipeLocalStore() = 0;
 };
 
+/// \brief Backends that poll (IMAP's 60s timer) can be poked for an
+///        immediate sync — e.g. when the user activates the account.
+///        Push-capable backends (Delta Chat, Proton) don't need this.
+class ISyncable
+{
+public:
+    virtual ~ISyncable() = default;
+    virtual void syncNow() = 0;
+};
+
 #endif
