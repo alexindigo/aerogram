@@ -264,6 +264,9 @@ void AccountController::connectBackend(const Account &account)
                     m.conversationId = compound;
                 m_activeMessages = fixed;
                 m_messageModel->setMessages(fixed);
+                // A non-empty landing resets the empty-refetch budget.
+                if (!fixed.isEmpty())
+                    m_emptyRefetchCount = 0;
                 emit messagesChanged(compound);
             });
 
@@ -366,10 +369,20 @@ void AccountController::rebuildMergedConversations()
 
     // Data-arrived-after-early-selection: if a conversation is active
     // but its model is empty (the user or a test selected it before the
-    // sync landed), re-fetch now that the index has content.
+    // sync landed), re-fetch now that the index has content. Capped per
+    // conversation — a genuinely empty folder must not refetch on every
+    // 60s poll forever.
     if (!m_activeConversationId.isEmpty()
-            && m_messageModel->rowCount() == 0)
-        fetchMessages(m_activeConversationId);
+            && m_messageModel->rowCount() == 0) {
+        if (m_activeConversationId != m_emptyRefetchId) {
+            m_emptyRefetchId = m_activeConversationId;
+            m_emptyRefetchCount = 0;
+        }
+        if (m_emptyRefetchCount < kMaxEmptyRefetches) {
+            ++m_emptyRefetchCount;
+            fetchMessages(m_activeConversationId);
+        }
+    }
 
     // One-time default selection: prefer a conversation named INBOX,
     // else the first. Keeps the email view populated without clicks.

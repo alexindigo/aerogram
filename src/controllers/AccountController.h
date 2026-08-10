@@ -160,6 +160,9 @@ private:
     QVariantList m_activeMessageAttachments;
     MasterKeyManager *m_vault;
     QSet<QString> m_pendingAdds;
+    QString m_emptyRefetchId;
+    int m_emptyRefetchCount = 0;
+    static constexpr int kMaxEmptyRefetches = 3;
     bool m_autoSelected = false;
 };
 
