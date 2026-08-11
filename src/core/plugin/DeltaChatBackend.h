@@ -15,6 +15,7 @@
 #include <QPromise>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QTimer>
 
 #include <algorithm>
 #include <exception>
@@ -70,6 +71,10 @@ public:
 
     QString family() const override { return QStringLiteral("chat"); }
 
+    /// The real account address, learned via get_account_info after
+    /// configure/restore — the identity the controller registers.
+    QString accountLabel() const override { return m_addr; }
+
     // -----------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------
@@ -109,6 +114,16 @@ public:
                 qWarning().noquote() << "DeltaChat: selected account" << m_accountId;
                 return call(QStringLiteral("select_account"), {m_accountId});
             }).unwrap()
+            .then([this](QJsonValue r) {
+                // A startIo() that arrived before the account id existed
+                // fires now that it does. (The QR setup chain starts IO
+                // on its own — this covers the already-configured path.)
+                if (m_ioRequested && m_pendingQr.isEmpty()) {
+                    m_ioRequested = false;
+                    QTimer::singleShot(0, this, [this] { startIo(); });
+                }
+                return r;  // pass through to the is_configured step
+            })
             .then([this](QJsonValue) {
                 return call(QStringLiteral("is_configured"), {m_accountId});
             }).unwrap()
@@ -116,9 +131,16 @@ public:
                 qWarning().noquote() << "DeltaChat: is_configured:" << r.toBool()
                                      << "qr pending:" << !m_pendingQr.isEmpty();
                 if (r.toBool()) {
-                    // Already configured: go online and report ready.
-                    emit configured(true);
-                    startIo();
+                    // Already configured: learn the identity, then go
+                    // online and report ready.
+                    fetchIdentity()
+                        .then([this](QJsonValue) {
+                            emit configured(true);
+                            startIo();
+                        })
+                        .onFailed([this](const std::exception &e) {
+                            emit errorOccurred(QString::fromUtf8(e.what()));
+                        });
                 } else if (!m_pendingQr.isEmpty()) {
                     // Fresh account with QR credentials (chatmail invite
                     // or classic dcaccount: URL) — run the setup chain.
@@ -163,12 +185,16 @@ public:
                 return call(QStringLiteral("configure"), {m_accountId});
             }).unwrap()
             .then([this](QJsonValue) {
+                qWarning().noquote() << "DeltaChat: configured, learning identity";
+                return fetchIdentity();
+            }).unwrap()
+            .then([this](QJsonValue) {
                 qWarning().noquote() << "DeltaChat: configured, starting io";
                 emit setupProgress(QStringLiteral("Starting synchronization…"));
                 return call(QStringLiteral("start_io"), {m_accountId});
             }).unwrap()
             .then([this](QJsonValue) {
-                qWarning().noquote() << "DeltaChat: io started";
+                qWarning().noquote() << "DeltaChat: io started as" << m_addr;
                 emit configured(true);
                 emit ioStarted(true, QString());
             })
@@ -201,6 +227,15 @@ public:
 
     void startIo() override
     {
+        // The controller calls startIo immediately after creation, but
+        // the account id is assigned asynchronously by the initialize
+        // chain — record the intent and let the chain kick IO once the
+        // account exists. (Calling start_io with id 0 fails with
+        // "account with id 0 not found".)
+        if (m_accountId <= 0) {
+            m_ioRequested = true;
+            return;
+        }
         call(QStringLiteral("start_io"), {m_accountId})
             .then([this](QJsonValue) {
                 emit ioStarted(true, QString());
@@ -502,6 +537,19 @@ private:
 
     int nextId() { return m_nextId++; }
 
+    /// Learn the account's real address (post-configure/restore) so the
+    /// controller can register it under its true identity.
+    QFuture<QJsonValue> fetchIdentity()
+    {
+        return call(QStringLiteral("get_account_info"), {m_accountId})
+            .then([this](QJsonValue r) {
+                m_addr = r.toObject()
+                             .value(QStringLiteral("addr")).toString();
+                qWarning().noquote() << "DeltaChat: identity:" << m_addr;
+                return r;
+            });
+    }
+
     void writeRequest(int id, const QString &method, const QJsonArray &params)
     {
         QJsonObject req;
@@ -518,6 +566,8 @@ private:
     int m_accountId = 0;
     int m_nextId = 1;
     QString m_pendingQr;
+    QString m_addr;
+    bool m_ioRequested = false;  // startIo arrived before the id existed
     QHash<int, std::shared_ptr<QPromise<QJsonValue>>> m_pending;
     QByteArray m_buffer;
 };

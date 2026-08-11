@@ -15,6 +15,8 @@ Rectangle {
     signal addAccountRequested()
     signal settingsRequested()
     signal accountSelected(string accountId)
+    /// Right-click on a pill → "Remove account" (with confirmation).
+    signal accountRemoveRequested(string accountId)
 
     ColumnLayout {
         anchors.fill: parent
@@ -63,7 +65,31 @@ Rectangle {
 
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: sidebar.accountSelected(model.accountId)
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: (mouse) => {
+                            if (mouse.button === Qt.RightButton)
+                                removeMenu.popup()
+                            else
+                                sidebar.accountSelected(model.accountId)
+                        }
+                    }
+
+                    Menu {
+                        id: removeMenu
+                        MenuItem {
+                            text: "Remove account"
+                            icon.name: "list-remove"
+                            onTriggered: removeConfirm.open()
+                        }
+                    }
+
+                    Kirigami.PromptDialog {
+                        id: removeConfirm
+                        title: "Remove account"
+                        subtitle: "Remove " + model.accountId + " and its "
+                                  + "stored credentials? Local cached mail is kept."
+                        standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
+                        onAccepted: sidebar.accountRemoveRequested(model.accountId)
                     }
                 }
             }

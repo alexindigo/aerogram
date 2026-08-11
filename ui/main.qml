@@ -38,6 +38,9 @@ Kirigami.ApplicationWindow {
             item.accountSelected.connect(function(accId) {
                 accountController.selectAccount(accId)
             })
+            item.accountRemoveRequested.connect(function(accId) {
+                accountController.removeAccount(accId)
+            })
         } else if (id === "email-conversations") {
             item.messageSelected.connect(function(mid) {
                 accountController.selectMessage(mid)

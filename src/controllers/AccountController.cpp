@@ -5,6 +5,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QCryptographicHash>
+#include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QTimer>
 
@@ -148,6 +150,11 @@ void AccountController::setConfigStatus(const QString &status)
 
 void AccountController::setActiveView(const QString &view)
 {
+    // Entering the add-account panel with no attempt in flight starts
+    // with a clean status — the previous add's banner ("Connected",
+    // "Adding failed: …") must not greet the next attempt.
+    if (view == QLatin1String("addAccount") && m_pendingAdds.isEmpty())
+        setConfigStatus(QString());
     if (m_activeView != view) {
         m_activeView = view;
         emit activeViewChanged();
@@ -335,9 +342,16 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
     a.backend = backend;
     a.credentials = credentials;
 
-    // Label/id derivation lives in one helper so the provisional
-    // addAccount path and this one can never disagree.
-    a.id = computeAccountId(type, credentials, &a.label);
+    // Label/id derivation: prefer the backend-reported identity (real
+    // address learned during setup); fall back to the credential-derived
+    // rule. One helper keeps the provisional path consistent.
+    const QString reported = backend->accountLabel();
+    if (!reported.isEmpty()) {
+        a.label = reported;
+        a.id = reported + QLatin1Char('#') + type;
+    } else {
+        a.id = computeAccountId(type, credentials, &a.label);
+    }
 
     a.index = m_accounts.size();
     // Color keys on the LABEL (bare address), never the id: the backend
@@ -689,7 +703,26 @@ void AccountController::addAccount(const QVariantMap &credentials)
         return;
     }
 
-    BackendPlugin *backend = BackendRegistry::create(type, credentials);
+    // Delta Chat credentials carry no address (the invite decides it),
+    // and one rpc-server process owns one accounts dir — a second
+    // panel-add would collide on the default dir's accounts.lock.
+    // Every interactive DC add gets its own store, persisted with the
+    // credentials so later launches reuse it. (CLI/dev accounts keep
+    // the shared default dir.)
+    QVariantMap effectiveCreds = credentials;
+    if (type == QLatin1String("deltachat")
+            && !effectiveCreds.contains(QStringLiteral("accounts_path"))) {
+        const QString dir =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
+            + QStringLiteral("/delta/add-")
+            + QString::fromLatin1(QCryptographicHash::hash(
+                  QDateTime::currentDateTime().toString(Qt::ISODateWithMs).toUtf8()
+                      + QByteArray::number(QRandomGenerator::global()->generate64()),
+                  QCryptographicHash::Md5).toHex().left(8));
+        effectiveCreds[QStringLiteral("accounts_path")] = dir;
+    }
+
+    BackendPlugin *backend = BackendRegistry::create(type, effectiveCreds);
     if (!backend) {
         emit errorOccurred(QStringLiteral("Unsupported account type: ") + type);
         return;
@@ -738,7 +771,7 @@ void AccountController::addAccount(const QVariantMap &credentials)
                     failAttempt(QString());
             });
     connect(backend, &BackendPlugin::ioStarted, this,
-            [this, type, credentials, backend, accountId, attemptTimer, failAttempt]
+            [this, type, effectiveCreds, backend, accountId, attemptTimer, failAttempt]
             (bool ok, const QString &error) mutable {
                 if (accountById(accountId) || !m_pendingAdds.contains(accountId))
                     return;
@@ -747,21 +780,41 @@ void AccountController::addAccount(const QVariantMap &credentials)
                     return;
                 }
 
-                // Success — NOW wire the account through the system.
+                // Success. Prefer the backend-reported identity (the
+                // real address) over the credential-derived guess —
+                // without it every Delta Chat account would register
+                // as "deltachat#deltachat" and collide.
+                QString realId = accountId;
+                const QString reported = backend->accountLabel();
+                if (!reported.isEmpty() && reported != accountId) {
+                    realId = reported + QLatin1Char('#') + type;
+                    // Stamp the identity into the credentials so the
+                    // vault reload derives the same id — the backend
+                    // learns its address only after configure, too late
+                    // for registration at load time.
+                    if (effectiveCreds.value(QStringLiteral("user")).toString().isEmpty())
+                        effectiveCreds[QStringLiteral("user")] = reported;
+                }
+                if (accountById(realId)) {
+                    failAttempt(QStringLiteral("account already added: ") + realId);
+                    return;
+                }
+
+                // NOW wire the account through the system.
                 attemptTimer->stop();
-                registerAccount(type, credentials, backend,
+                registerAccount(type, effectiveCreds, backend,
                                 /*driveConfigure=*/false);
 
                 if (m_vault && !m_vault->isLocked()) {
                     AccountStore store(accountsDbPath(), m_vault->key());
                     QString err;
-                    if (!store.open(&err) || !store.add(credentials, &err))
+                    if (!store.open(&err) || !store.add(effectiveCreds, &err))
                         emit errorOccurred(QStringLiteral("Persist account failed: ") + err);
                 }
 
                 m_pendingAdds.remove(accountId);
                 emit accountAddInProgressChanged();
-                setConfigStatus(QStringLiteral("Account added: ") + accountId);
+                setConfigStatus(QStringLiteral("Account added: ") + realId);
 
                 if (auto *p = dynamic_cast<IConversationProvider *>(backend))
                     p->fetchConversations();
@@ -812,17 +865,18 @@ void AccountController::removeAccount(const QString &accountId)
     if (m_activeAccountId == accountId)
         setActiveAccountId(QString());
 
-    if (m_vault && !m_vault->isLocked() && !account.label.isEmpty()
-            && account.label != account.type) {
-        // label is user@host; split on LAST '@' (user may be an email
-        // address containing '@').
-        const int at = account.label.lastIndexOf(QLatin1Char('@'));
-        if (at > 0) {
+    if (m_vault && !m_vault->isLocked()) {
+        // The vault row is keyed by the CREDENTIALS (type, user, host) —
+        // exactly as add() wrote them. Deriving from the label breaks
+        // for backends whose user holds a full address with empty host
+        // (Delta Chat, Proton).
+        const QString user = account.credentials.value(QStringLiteral("user")).toString();
+        const QString host = account.credentials.value(QStringLiteral("host")).toString();
+        if (!user.isEmpty() || !host.isEmpty()) {
             AccountStore store(accountsDbPath(), m_vault->key());
             QString err;
             if (store.open(&err)
-                    && !store.remove(account.type, account.label.left(at),
-                                     account.label.mid(at + 1), &err))
+                    && !store.remove(account.type, user, host, &err))
                 emit errorOccurred(QStringLiteral("Remove persisted account failed: ") + err);
         }
     }

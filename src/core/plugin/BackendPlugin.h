@@ -34,6 +34,14 @@ public:
     virtual void startIo() = 0;
     virtual void stopIo() = 0;
 
+    /// \brief The account's backend-reported identity (the real
+    ///        address once the backend knows it — Delta Chat learns it
+    ///        only after configure; Proton echoes the login). Empty
+    ///        until known; the controller prefers this over
+    ///        credential-derived labels so two accounts of the same
+    ///        type never collide.
+    virtual QString accountLabel() const { return {}; }
+
 signals:
     // Lifecycle
     void configured(bool success);
