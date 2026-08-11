@@ -690,7 +690,8 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         t.add_noreferrer();
         t.strip_whitelist(StripStyleSheets::No);
         let out = t.disable_content(true, true);
-        (t.to_string(), !out.remote_urls.is_empty() || !out.embedded_urls.is_empty())
+        (clean_for_text_engine(&t.to_string()),
+         !out.remote_urls.is_empty() || !out.embedded_urls.is_empty())
     } else {
         (String::new(), false)
     };
@@ -706,6 +707,42 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
 /// Long-poll: block until at least one watcher tick exists or the
 /// timeout elapses, then drain the queue. Returns a (possibly empty)
 /// array of table tags, deduplicated — e.g. ["messages"].
+/// Post-sanitize cleanup for Qt's text engine (QTextDocument renders a
+/// safe HTML4 subset). Two artifact classes removed here:
+///
+/// 1. Dead `<img>` tags — content disabling neuters their src but the
+///    tag survives, and Qt renders it as a ￼ placeholder box.
+/// 2. Zero-width marketing padding (ZWSP/ZWNJ/CGJ/WJ/BOM) — preview-text
+///    hacks that show up as stray marks. ZWJ (U+200D) is KEPT: emoji
+///    sequences need it.
+fn clean_for_text_engine(html: &str) -> String {
+    let mut out = html.to_string();
+
+    // Drop <img> tags (case-insensitive; sanitized output has no script
+    // contexts where this could misfire).
+    let lower = out.to_lowercase();
+    let mut result = String::with_capacity(out.len());
+    let mut rest = 0usize;
+    while let Some(pos) = lower[rest..].find("<img") {
+        let abs = rest + pos;
+        // find the closing '>' from abs in the ORIGINAL string
+        if let Some(end) = out[abs..].find('>') {
+            result.push_str(&out[rest..abs]);
+            rest = abs + end + 1;
+        } else {
+            break;
+        }
+    }
+    result.push_str(&out[rest..]);
+    out = result;
+
+    // Strip zero-width padding (keep ZWJ 200D and FE0F for emoji).
+    out.retain(|c| !matches!(c,
+        '\u{200B}' | '\u{200C}' | '\u{034F}' | '\u{2060}' | '\u{FEFF}'));
+
+    out
+}
+
 async fn wait_event(core: &ProtonCore, params: Value) -> Result<Value, String> {
     let timeout_ms = params
         .get("timeout_ms")

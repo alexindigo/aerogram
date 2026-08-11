@@ -87,28 +87,54 @@ Item {
                     type: Kirigami.MessageType.Information
                 }
 
-                // -- scrolling body --
+                // -- body area (ScrollView + loading overlay) --
                 // Rich text only when the backend delivered SANITIZED html
                 // (scripts/remote content stripped at the source). Plain
                 // otherwise. TextEdit gives selection; readOnly keeps it
                 // display-only. Never a browser engine.
-                ScrollView {
+                Item {
+                    id: bodyArea
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    clip: true
 
-                    TextEdit {
-                        width: messagesPanel.width - 40
-                        textFormat: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
-                                    ? TextEdit.RichText : TextEdit.PlainText
-                        text: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
-                              ? modelData.bodyHtml : (modelData.body || "")
-                        wrapMode: TextEdit.Wrap
-                        readOnly: true
-                        selectByMouse: true
-                        color: Kirigami.Theme.textColor
-                        // Links open externally; we never navigate in-app.
-                        onLinkActivated: (url) => Qt.openUrlExternally(url)
+                    // Loader: body arrives async (decrypt + sanitize on a
+                    // worker). Until then show a spinner, not a blank page.
+                    property bool bodyLoaded: (modelData.body && modelData.body.length > 0)
+                                              || (modelData.bodyHtml && modelData.bodyHtml.length > 0)
+
+                    ScrollView {
+                        anchors.fill: parent
+                        clip: true
+
+                        TextEdit {
+                            width: bodyArea.width - 40
+                            textFormat: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
+                                        ? TextEdit.RichText : TextEdit.PlainText
+                            text: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
+                                  ? modelData.bodyHtml : (modelData.body || "")
+                            wrapMode: TextEdit.Wrap
+                            readOnly: true
+                            selectByMouse: true
+                            color: Kirigami.Theme.textColor
+                            // Links open externally; we never navigate in-app.
+                            onLinkActivated: (url) => Qt.openUrlExternally(url)
+                        }
+                    }
+
+                    // Loading overlay (sibling of the ScrollView, so it
+                    // centers on the pane, not inside scrollable content).
+                    Column {
+                        anchors.centerIn: parent
+                        visible: !bodyArea.bodyLoaded
+                        spacing: 10
+                        BusyIndicator {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            running: true
+                        }
+                        Label {
+                            text: "Loading message…"
+                            color: Kirigami.Theme.disabledTextColor
+                        }
                     }
                 }
 
