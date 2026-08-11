@@ -669,11 +669,17 @@ void AccountController::rebuildMergedConversations()
         fetchMessages(pick);
     }
 
-    // Resolve a pending account selection once its conversations land.
-    if (!m_pendingSelectAccount.isEmpty()
-            && m_conversationsByAccount.contains(m_pendingSelectAccount)
-            && !m_conversationsByAccount.value(m_pendingSelectAccount).isEmpty()) {
-        selectDefaultConversation(accountById(m_pendingSelectAccount));
+    // Resolve a pending account selection once its conversations land —
+    // but ONLY if the user is still on that account. If they clicked
+    // away meanwhile, the pending selection is stale and must not yank
+    // the conversation list back (the "wrong account" race).
+    if (!m_pendingSelectAccount.isEmpty()) {
+        if (m_activeAccountId != m_pendingSelectAccount) {
+            m_pendingSelectAccount.clear();
+        } else if (m_conversationsByAccount.contains(m_pendingSelectAccount)
+                   && !m_conversationsByAccount.value(m_pendingSelectAccount).isEmpty()) {
+            selectDefaultConversation(accountById(m_pendingSelectAccount));
+        }
     }
 }
 

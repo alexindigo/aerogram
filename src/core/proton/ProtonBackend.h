@@ -5,7 +5,9 @@
 #include "../plugin/Capabilities.h"
 
 #include <QFuture>
+#include <QFutureSynchronizer>
 #include <QJsonObject>
+#include <QMutex>
 
 #include <atomic>
 #include <thread>
@@ -99,6 +101,15 @@ private:
     void startEventLoop();
     std::thread m_eventThread;
     std::atomic<bool> m_eventThreadStop{false};
+
+    // Worker lifetime discipline (mirrors ImapBackend): nothing
+    // captures a live `this`/m_core past teardown. Workers check
+    // m_shuttingDown at entry; shutdown() drains them before freeing
+    // the core. Index/store writes are serialized — concurrent
+    // writers flooded SQLite with "database is locked".
+    std::atomic<bool> m_shuttingDown{false};
+    QFutureSynchronizer<void> m_workers;
+    QMutex m_storeMutex;
 };
 
 #endif

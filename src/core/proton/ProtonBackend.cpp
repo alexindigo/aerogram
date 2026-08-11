@@ -90,12 +90,14 @@ bool ProtonBackend::initialize(const QVariantMap &params)
 
 void ProtonBackend::shutdown()
 {
-    // Stop the event thread BEFORE freeing the core: it calls into the
-    // core continuously. The 2s wait_event timeout bounds the join.
+    // Stop scheduling new work first; drain in-flight workers so no
+    // continuation touches a dead backend/core (the prefetch crash).
+    m_shuttingDown = true;
     if (m_eventThread.joinable()) {
         m_eventThreadStop = true;
         m_eventThread.join();
     }
+    m_workers.waitForFinished();
     if (m_core) {
         proton_core_free(m_core);
         m_core = nullptr;
@@ -169,11 +171,25 @@ QFuture<QJsonValue> ProtonBackend::call(const QString &method, const QJsonObject
     promise->start();
     QFuture<QJsonValue> future = promise->future();
 
+    if (m_shuttingDown) {
+        // Fail fast — no work starts during/after teardown.
+        promise->setException(std::make_exception_ptr(
+            ProtonError(QStringLiteral("backend is shutting down"))));
+        promise->finish();
+        return future;
+    }
+
     const QByteArray m = method.toUtf8();
     const QByteArray p = QJsonDocument(params).toJson(QJsonDocument::Compact);
     ProtonCore *core = m_core;
 
-    QtConcurrent::run([core, m, p, promise] {
+    m_workers.addFuture(QtConcurrent::run([this, core, m, p, promise] {
+        if (m_shuttingDown) {
+            promise->setException(std::make_exception_ptr(
+                ProtonError(QStringLiteral("backend is shutting down"))));
+            promise->finish();
+            return;
+        }
         try {
             char *raw = proton_call(core, m.constData(), p.constData());
             promise->addResult(parseResult(raw));
@@ -181,7 +197,7 @@ QFuture<QJsonValue> ProtonBackend::call(const QString &method, const QJsonObject
             promise->setException(std::current_exception());
         }
         promise->finish();
-    });
+    }));
     return future;
 }
 
@@ -334,7 +350,9 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
             // `total` rows), anything in our index but absent here was
             // deleted server-side — remove it (index rows + store
             // shards). Skipped for truncated listings.
-            if (!m_key.isEmpty() && qint64(messages.size()) == total) {
+            if (!m_key.isEmpty() && !m_shuttingDown
+                    && qint64(messages.size()) == total) {
+                QMutexLocker storeLock(&m_storeMutex);
                 MetadataIndex idx(m_indexDb, m_key);
                 QString err;
                 if (idx.open(&err)) {
@@ -354,13 +372,15 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
             // are instant and the FTS index builds a search corpus.
             // Quiet: persistMessage only — no messageBodyReady (must not
             // clobber whatever message is open).
-            if (!m_key.isEmpty()) {
+            if (!m_key.isEmpty() && !m_shuttingDown) {
                 const int prefetchCount = qMin(20, messages.size());
                 for (int i = 0; i < prefetchCount; ++i) {
                     const QString mid = messages.at(i).messageId;
                     call(QStringLiteral("message_body"),
                          {{QStringLiteral("id"), mid.toLongLong()}})
                         .then([this, conversationId, mid](QJsonValue rb) {
+                            if (m_shuttingDown)
+                                return;
                             const QJsonObject o = rb.toObject();
                             persistMessage(conversationId, mid, o,
                                            o.value(QStringLiteral("text")).toString());
@@ -508,8 +528,11 @@ void ProtonBackend::persistMessage(const QString &conversationId,
                                    const QJsonObject &apiMsg,
                                    const QString &plainBody)
 {
-    if (m_key.isEmpty() || plainBody.isEmpty())
+    if (m_shuttingDown || m_key.isEmpty() || plainBody.isEmpty())
         return;
+
+    // Index + shard writes are serialized across workers.
+    QMutexLocker storeLock(&m_storeMutex);
 
     const QByteArray eml = buildEml(apiMsg.value(QStringLiteral("header")).toString(),
                                     plainBody,
