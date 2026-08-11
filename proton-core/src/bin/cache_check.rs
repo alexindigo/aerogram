@@ -28,7 +28,7 @@ fn main() {
         for m in msgs["ok"]["messages"].as_array().unwrap() {
             let Some(mid) = m["id"].as_u64() else { continue };
             let (b1, t1) = call("message_body", &format!(r#"{{"id":{mid}}}"#));
-            let (b2, t2) = call("message_body", &format!(r#"{{"id":{mid}}}"#));
+            let (_b2, t2) = call("message_body", &format!(r#"{{"id":{mid}}}"#));
             if b1["ok"].is_null() { continue; }
             println!("msg {mid}: 1st={:?}  2nd={:?}  (cached if 2nd << 1st)", t1, t2);
             unsafe { proton_core_free(core) };
