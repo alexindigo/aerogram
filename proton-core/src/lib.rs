@@ -669,12 +669,11 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
     let is_html = body.mime_type
         == proton_mail_common::models::MessageMimeType::TextHtml;
 
-    // Sanitized display HTML + plain text via the SHARED sanitizer
-    // crate (aerogram-html-sanitize) — the one implementation of the
-    // pipeline for every backend.
+    // RAW truth out of the core. Policy: store raw, sanitize at READ
+    // (the app's shared pipeline). `text` is the plain transform for
+    // list snippets/fallback; html is the untouched decrypted body.
     let (text, html, blocked_remote) = if is_html {
-        let (h, p, blocked) = sanitizer::sanitize_for_display(&body.body);
-        (p, h, blocked)
+        (sanitizer::to_plain_text(&body.body), body.body.clone(), false)
     } else {
         (body.body.clone(), String::new(), false)
     };

@@ -11,7 +11,12 @@
 
 #include "../store/MessageStore.h"
 #include "../store/MetadataIndex.h"
-#include "../imap/MimeParser.h"
+#include "core/content/ContentPipeline.h"
+#include "core/content/HtmlSanitizer.h"
+
+#include <KMime/Headers>
+#include <KMime/Message>
+#include <KMime/Util>
 
 #include <exception>
 #include <memory>
@@ -375,9 +380,12 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
 {
     // Store-first: a previously fetched message reads from the local
     // encrypted store (instant, offline). Only a miss hits the SDK.
+    // Policy: the store holds RAW truth; sanitization happens at read
+    // time via the shared pipeline (defense in depth).
     if (!m_key.isEmpty()) {
         QString cachedText;
         QString cachedHtml;
+        bool cachedBlocked = false;
         {
             MetadataIndex idx(m_indexDb, m_key);
             QString err;
@@ -387,19 +395,19 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
                     MessageStore store(m_storeRoot, m_key);
                     const QByteArray raw = store.get(rel);
                     if (!raw.isEmpty()) {
-                        // Stored as a faithful .eml — parse like IMAP.
-                        const auto parsed = MimeParser::parse(raw);
+                        // Faithful .eml — through the shared pipeline
+                        // (parse + sanitize), exactly like IMAP.
+                        const auto parsed = ContentPipeline::parse(raw);
                         cachedText = parsed.bodyPlain;
-                        cachedHtml = parsed.bodyHtml;  // already sanitized
+                        cachedHtml = parsed.bodyHtmlSafe;
+                        cachedBlocked = parsed.remoteContentBlocked;
                     }
                 }
             }
         }
         if (!cachedText.isEmpty()) {
-            // Instant + offline. bodyHtml came from the store (already
-            // sanitized at fetch time); remote content stays blocked.
             emit messageBodyReady(conversationId, messageId, cachedText,
-                                  cachedHtml, !cachedHtml.isEmpty());
+                                  cachedHtml, cachedBlocked);
             return;
         }
     }
@@ -408,15 +416,20 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
          {{QStringLiteral("id"), messageId.toLongLong()}})
         .then([this, conversationId, messageId](QJsonValue r) {
             const QJsonObject o = r.toObject();
-            // text = plain (always safe), html = SDK-sanitized display
-            // html (remote content stripped), blocked flag drives the
-            // "remote content blocked" note.
+            // The core returns RAW truth; we persist it raw and sanitize
+            // for display right here (same policy as the store path).
             const QString text = o.value(QStringLiteral("text")).toString();
+            const QString rawHtml = o.value(QStringLiteral("html")).toString();
             persistMessage(conversationId, messageId, o, text);
-            emit messageBodyReady(
-                conversationId, messageId, text,
-                o.value(QStringLiteral("html")).toString(),
-                o.value(QStringLiteral("blocked_remote")).toBool());
+            QString safeHtml;
+            bool blocked = false;
+            if (!rawHtml.isEmpty()) {
+                const SanitizedBody s = HtmlSanitizer::sanitize(rawHtml);
+                safeHtml = s.html;
+                blocked = s.blockedRemote;
+            }
+            emit messageBodyReady(conversationId, messageId, text,
+                                  safeHtml, blocked);
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));
@@ -431,22 +444,24 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
 static QByteArray buildEml(const QString &rawHeader, const QString &plainBody,
                            const QString &htmlBody)
 {
-    // Parse the original header block (append CRLF CRLF so splitMessage
-    // sees a complete message with an empty body).
-    const auto orig = MimeParser::splitMessage(
-        rawHeader.toUtf8() + "\r\n\r\n");
+    // Parse the original header block via KMime (LF-normalized; empty
+    // body appended) and copy every non-content header verbatim.
+    KMime::Message orig;
+    orig.setContent(KMime::CRLFtoLF(rawHeader.toUtf8()) + "\n\n");
+    orig.parse();
 
     QByteArray out;
     auto putLine = [&out](const QString &name, const QString &value) {
         if (!value.isEmpty())
             out += name.toUtf8() + ": " + value.toUtf8() + "\r\n";
     };
-    for (auto it = orig.headers.begin(); it != orig.headers.end(); ++it) {
-        const QString k = it.key().toLower();
+    for (const auto *h : orig.headers()) {
+        const QString name = QString::fromLatin1(h->type());
+        const QString k = name.toLower();
         if (k.startsWith(QStringLiteral("content-"))
             || k == QLatin1String("mime-version"))
             continue;  // regenerated below for the new body structure
-        out += it.key().toUtf8() + ": " + it.value().toUtf8() + "\r\n";
+        out += name.toUtf8() + ": " + h->asUnicodeString().toUtf8() + "\r\n";
     }
 
     if (htmlBody.isEmpty()) {
@@ -499,7 +514,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     const QByteArray eml = buildEml(apiMsg.value(QStringLiteral("header")).toString(),
                                     plainBody,
                                     apiMsg.value(QStringLiteral("html")).toString());
-    const auto parsed = MimeParser::parse(eml);
+    const auto parsed = ContentPipeline::parse(eml);
 
     MessageStore store(m_storeRoot, m_key);
     const QString rel = store.put(eml, messageId);
