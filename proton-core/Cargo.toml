@@ -19,7 +19,7 @@ proton-core-common = { git = "https://github.com/ProtonMail/rust-mail", rev = "3
 proton-issue-reporter-service = { git = "https://github.com/ProtonMail/rust-mail", rev = "3b6d35b766c10d91b1ffa68e1c5ee47ffca2a67e" }
 proton-log-service = { git = "https://github.com/ProtonMail/rust-mail", rev = "3b6d35b766c10d91b1ffa68e1c5ee47ffca2a67e" }
 proton-network-monitor-service = { git = "https://github.com/ProtonMail/rust-mail", rev = "3b6d35b766c10d91b1ffa68e1c5ee47ffca2a67e" }
-proton-mail-html-transformer = { git = "https://github.com/ProtonMail/rust-mail", rev = "3b6d35b766c10d91b1ffa68e1c5ee47ffca2a67e" }
+aerogram-html-sanitize = { path = "../html-sanitize-core" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

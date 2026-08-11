@@ -35,10 +35,10 @@ use proton_issue_reporter_service::NoopIssueReporter;
 use proton_log_service::LogService;
 use proton_mail_common::datatypes::LocalMessageId;
 use proton_core_common::models::ModelExtension as _;
-use proton_mail_html_transformer::sanitizer::StripStyleSheets;
-use proton_mail_html_transformer::Transformer;
+
 use proton_mail_common::models::Message as MailMessage;
 use proton_mail_common::MailContext;
+use aerogram_html_sanitize as sanitizer;
 
 // ---------------------------------------------------------------------
 // Tokio runtime: one multi-thread runtime per process, created lazily.
@@ -669,34 +669,14 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
     let is_html = body.mime_type
         == proton_mail_common::models::MessageMimeType::TextHtml;
 
-    // Plain text (crash-safe fallback) via html2text…
-    let text = if is_html {
-        Transformer::html2text(
-            std::io::Cursor::new(body.body.as_bytes()),
-            proton_mail_html_transformer::Html2TextOptions {
-                decorate_links: true,
-                decorate_images: false,
-            },
-        )
-        .unwrap_or_else(|_| body.body.clone())
+    // Sanitized display HTML + plain text via the SHARED sanitizer
+    // crate (aerogram-html-sanitize) — the one implementation of the
+    // pipeline for every backend.
+    let (text, html, blocked_remote) = if is_html {
+        let (h, p, blocked) = sanitizer::sanitize_for_display(&body.body);
+        (p, h, blocked)
     } else {
-        body.body.clone()
-    };
-
-    // …AND sanitized display HTML. The pipeline: strip disallowed
-    // tags/attrs (scripts, forms), noreferrer links, disable remote +
-    // embedded content (tracking pixels, cid:/data: images a text
-    // engine can't resolve). No dark-mode CSS injection — our renderer
-    // is Qt's QTextDocument (safe HTML4 subset), not a webview.
-    let (html, blocked_remote) = if is_html {
-        let mut t = Transformer::new(&body.body);
-        t.add_noreferrer();
-        t.strip_whitelist(StripStyleSheets::No);
-        let out = t.disable_content(true, true);
-        (clean_for_text_engine(&t.to_string()),
-         !out.remote_urls.is_empty() || !out.embedded_urls.is_empty())
-    } else {
-        (String::new(), false)
+        (body.body.clone(), String::new(), false)
     };
 
     Ok(json!({
@@ -713,42 +693,6 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
 /// Long-poll: block until at least one watcher tick exists or the
 /// timeout elapses, then drain the queue. Returns a (possibly empty)
 /// array of table tags, deduplicated — e.g. ["messages"].
-/// Post-sanitize cleanup for Qt's text engine (QTextDocument renders a
-/// safe HTML4 subset). Two artifact classes removed here:
-///
-/// 1. Dead `<img>` tags — content disabling neuters their src but the
-///    tag survives, and Qt renders it as a ￼ placeholder box.
-/// 2. Zero-width marketing padding (ZWSP/ZWNJ/CGJ/WJ/BOM) — preview-text
-///    hacks that show up as stray marks. ZWJ (U+200D) is KEPT: emoji
-///    sequences need it.
-fn clean_for_text_engine(html: &str) -> String {
-    let mut out = html.to_string();
-
-    // Drop <img> tags (case-insensitive; sanitized output has no script
-    // contexts where this could misfire).
-    let lower = out.to_lowercase();
-    let mut result = String::with_capacity(out.len());
-    let mut rest = 0usize;
-    while let Some(pos) = lower[rest..].find("<img") {
-        let abs = rest + pos;
-        // find the closing '>' from abs in the ORIGINAL string
-        if let Some(end) = out[abs..].find('>') {
-            result.push_str(&out[rest..abs]);
-            rest = abs + end + 1;
-        } else {
-            break;
-        }
-    }
-    result.push_str(&out[rest..]);
-    out = result;
-
-    // Strip zero-width padding (keep ZWJ 200D and FE0F for emoji).
-    out.retain(|c| !matches!(c,
-        '\u{200B}' | '\u{200C}' | '\u{034F}' | '\u{2060}' | '\u{FEFF}'));
-
-    out
-}
-
 async fn wait_event(core: &ProtonCore, params: Value) -> Result<Value, String> {
     let timeout_ms = params
         .get("timeout_ms")

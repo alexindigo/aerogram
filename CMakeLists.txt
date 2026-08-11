@@ -40,6 +40,7 @@ qt_add_executable(aerogram
     src/core/ipc/IpcServer.h
     src/core/proton/ProtonBackend.h
     src/core/proton/ProtonBackend.cpp
+    src/core/content/HtmlSanitizer.h
     src/ui/QrCodeHelper.h
 )
 
@@ -152,4 +153,29 @@ if(HAVE_PROTON_CORE)
     target_link_libraries(aerogram PRIVATE aerogram_proton_core gopenpgp_sys
         pthread dl m resolv)
     target_compile_definitions(aerogram PRIVATE AEROGRAM_HAVE_PROTON)
+endif()
+
+# --- Shared email-HTML sanitizer (Rust staticlib, pure-Rust deps) ----
+# Required for ALL builds: an optional sanitizer is how raw HTML leaks
+# into a renderer. No Go archive here (transformer is pure Rust).
+if(CARGO)
+    set(SANITIZE_LIB
+        ${CMAKE_SOURCE_DIR}/html-sanitize-core/target/debug/libaerogram_html_sanitize.a)
+    file(GLOB SANITIZE_SOURCES CONFIGURE_DEPENDS
+        ${CMAKE_SOURCE_DIR}/html-sanitize-core/src/*.rs
+        ${CMAKE_SOURCE_DIR}/html-sanitize-core/Cargo.toml)
+    add_custom_command(
+        OUTPUT ${SANITIZE_LIB}
+        COMMAND ${CARGO} build
+        DEPENDS ${SANITIZE_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/html-sanitize-core
+        COMMENT "cargo build aerogram-html-sanitize")
+    add_custom_target(html_sanitize ALL DEPENDS ${SANITIZE_LIB})
+    add_library(aerogram_html_sanitize STATIC IMPORTED GLOBAL)
+    set_target_properties(aerogram_html_sanitize PROPERTIES
+        IMPORTED_LOCATION ${SANITIZE_LIB})
+    add_dependencies(aerogram_html_sanitize html_sanitize)
+    target_link_libraries(aerogram PRIVATE aerogram_html_sanitize pthread dl m)
+else()
+    message(FATAL_ERROR "cargo is required (html sanitizer is mandatory)")
 endif()

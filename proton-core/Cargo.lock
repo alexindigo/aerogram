@@ -29,9 +29,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aerogram-html-sanitize"
+version = "0.1.0"
+dependencies = [
+ "proton-mail-html-transformer",
+ "serde_json",
+]
+
+[[package]]
 name = "aerogram-proton-core"
 version = "0.1.0"
 dependencies = [
+ "aerogram-html-sanitize",
  "anyhow",
  "proton-account-api",
  "proton-core-api",
@@ -39,7 +48,6 @@ dependencies = [
  "proton-issue-reporter-service",
  "proton-log-service",
  "proton-mail-common",
- "proton-mail-html-transformer",
  "proton-network-monitor-service",
  "secrecy",
  "serde",
