@@ -9,8 +9,8 @@
 #include <QTimer>
 #include <QtConcurrent>
 
-#include "../imap/MessageStore.h"
-#include "../imap/MetadataIndex.h"
+#include "../store/MessageStore.h"
+#include "../store/MetadataIndex.h"
 #include "../imap/MimeParser.h"
 
 #include <exception>

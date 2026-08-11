@@ -18,8 +18,8 @@
 #include "core/plugin/BackendPlugin.h"
 #include "core/plugin/Capabilities.h"
 #include "CurlTransport.h"
-#include "MessageStore.h"
-#include "MetadataIndex.h"
+#include "core/store/MessageStore.h"
+#include "core/store/MetadataIndex.h"
 #include "MimeParser.h"
 
 /// \brief IMAP backend prototype: libcurl transport + minimal MIME
