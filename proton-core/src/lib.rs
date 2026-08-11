@@ -35,6 +35,8 @@ use proton_issue_reporter_service::NoopIssueReporter;
 use proton_log_service::LogService;
 use proton_mail_common::datatypes::LocalMessageId;
 use proton_core_common::models::ModelExtension as _;
+use proton_mail_html_transformer::sanitizer::StripStyleSheets;
+use proton_mail_html_transformer::Transformer;
 use proton_mail_common::models::Message as MailMessage;
 use proton_mail_common::MailContext;
 
@@ -663,8 +665,10 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
     // something we let leak into a text widget.
     let is_html = body.mime_type
         == proton_mail_common::models::MessageMimeType::TextHtml;
+
+    // Plain text (crash-safe fallback) via html2text…
     let text = if is_html {
-        proton_mail_html_transformer::Transformer::html2text(
+        Transformer::html2text(
             std::io::Cursor::new(body.body.as_bytes()),
             proton_mail_html_transformer::Html2TextOptions {
                 decorate_links: true,
@@ -673,11 +677,28 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         )
         .unwrap_or_else(|_| body.body.clone())
     } else {
-        body.body
+        body.body.clone()
+    };
+
+    // …AND sanitized display HTML. The pipeline: strip disallowed
+    // tags/attrs (scripts, forms), noreferrer links, disable remote +
+    // embedded content (tracking pixels, cid:/data: images a text
+    // engine can't resolve). No dark-mode CSS injection — our renderer
+    // is Qt's QTextDocument (safe HTML4 subset), not a webview.
+    let (html, blocked_remote) = if is_html {
+        let mut t = Transformer::new(&body.body);
+        t.add_noreferrer();
+        t.strip_whitelist(StripStyleSheets::No);
+        let out = t.disable_content(true, true);
+        (t.to_string(), !out.remote_urls.is_empty() || !out.embedded_urls.is_empty())
+    } else {
+        (String::new(), false)
     };
 
     Ok(json!({
         "text": text,
+        "html": html,
+        "blocked_remote": blocked_remote,
         "mime_type": format!("{:?}", body.mime_type),
     }))
 }

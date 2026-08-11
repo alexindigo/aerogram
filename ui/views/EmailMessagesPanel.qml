@@ -79,16 +79,36 @@ Item {
                     opacity: 0.3
                 }
 
+                // -- remote-content note (only when html was sanitized) --
+                Kirigami.InlineMessage {
+                    Layout.fillWidth: true
+                    visible: (modelData.remoteContentBlocked === true)
+                    text: "Remote content blocked (tracking protection)."
+                    type: Kirigami.MessageType.Information
+                }
+
                 // -- scrolling body --
+                // Rich text only when the backend delivered SANITIZED html
+                // (scripts/remote content stripped at the source). Plain
+                // otherwise. TextEdit gives selection; readOnly keeps it
+                // display-only. Never a browser engine.
                 ScrollView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
 
-                    Label {
-                        text: modelData.body || ""
-                        wrapMode: Text.Wrap
+                    TextEdit {
                         width: messagesPanel.width - 40
+                        textFormat: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
+                                    ? TextEdit.RichText : TextEdit.PlainText
+                        text: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
+                              ? modelData.bodyHtml : (modelData.body || "")
+                        wrapMode: TextEdit.Wrap
+                        readOnly: true
+                        selectByMouse: true
+                        color: Kirigami.Theme.textColor
+                        // Links open externally; we never navigate in-app.
+                        onLinkActivated: (url) => Qt.openUrlExternally(url)
                     }
                 }
 

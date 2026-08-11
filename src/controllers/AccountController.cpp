@@ -445,7 +445,8 @@ void AccountController::connectBackend(const Account &account)
 
     connect(backend, &BackendPlugin::messageBodyReady, this,
             [this, accountId](const QString &localConvId, const QString &messageId,
-                              const QString &body) {
+                              const QString &body, const QString &bodyHtml,
+                              bool remoteContentBlocked) {
                 if (messageId == m_activeMessageId) {
                     // Update the entry's body in the active list.
                     QVariantList msgs = m_activeMessages;
@@ -453,6 +454,8 @@ void AccountController::connectBackend(const Account &account)
                         QVariantMap e = msgs[i].toMap();
                         if (e.value(QStringLiteral("messageId")).toString() == messageId) {
                             e[QStringLiteral("body")] = body;
+                            e[QStringLiteral("bodyHtml")] = bodyHtml;
+                            e[QStringLiteral("remoteContentBlocked")] = remoteContentBlocked;
                             msgs[i] = e;
                             setActiveMessages(msgs);
                             break;
@@ -460,7 +463,7 @@ void AccountController::connectBackend(const Account &account)
                     }
                 }
                 emit messageBodyReady(accountId + QStringLiteral("/") + localConvId,
-                                      messageId, body);
+                                      messageId, body, bodyHtml, remoteContentBlocked);
             });
 
     connect(backend, &BackendPlugin::attachmentSaved, this,
@@ -717,6 +720,8 @@ void AccountController::selectMessage(const QString &messageId)
     QVariantMap entry;
     entry[QStringLiteral("messageId")] = messageId;
     entry[QStringLiteral("body")] = QString();
+    entry[QStringLiteral("bodyHtml")] = QString();   // filled by fetch
+    entry[QStringLiteral("remoteContentBlocked")] = false;
 
     QVariantList atts;
     for (const Message &m : m_currentConversationMessages) {

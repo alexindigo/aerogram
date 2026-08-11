@@ -279,11 +279,14 @@ private:
 
         connect(m_controller, &AccountController::messageBodyReady, this,
                 [this](const QString &conversationId, const QString &messageId,
-                       const QString &body) {
+                       const QString &body, const QString &bodyHtml,
+                       bool remoteContentBlocked) {
                     QJsonObject p;
                     p["conversationId"] = conversationId;
                     p["messageId"] = messageId;
                     p["body"] = body;
+                    p["bodyHtml"] = bodyHtml;
+                    p["remoteContentBlocked"] = remoteContentBlocked;
                     broadcastEvent(QStringLiteral("messageBodyReady"), p);
                 });
 

@@ -65,8 +65,15 @@ signals:
     void conversationsReady(const QVector<Conversation> &conversations);
     void messagesReady(const QString &conversationId, const QVector<Message> &messages);
     void messageSent(bool ok, const QString &conversationId);
+    /// \brief Body for an opened message. `body` is plain text (always
+    ///        safe to show). `bodyHtml` is non-empty only when the
+    ///        backend produced SANITIZED html (scripts/remote content
+    ///        stripped) suitable for Qt's rich-text subset; the UI
+    ///        renders rich only then. `remoteContentBlocked` tells the
+    ///        UI to show a "remote content blocked" note.
     void messageBodyReady(const QString &conversationId, const QString &messageId,
-                          const QString &body);
+                          const QString &body, const QString &bodyHtml,
+                          bool remoteContentBlocked);
     void attachmentSaved(bool ok, const QString &messageId, const QString &path);
 
     // -----------------------------------------------------------------

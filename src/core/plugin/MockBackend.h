@@ -74,7 +74,8 @@ public:
     void fetchMessageBody(const QString &conversationId, const QString &messageId) override
     {
         emit messageBodyReady(conversationId, messageId,
-                              QStringLiteral("Mock body for %1").arg(messageId));
+                              QStringLiteral("Mock body for %1").arg(messageId),
+                              QString(), false);
     }
 
     void saveAttachment(const QString &messageId, int partIndex,

@@ -120,7 +120,8 @@ signals:
     void messagesChanged(const QString &conversationId);
     void messageSent(bool ok, const QString &conversationId);
     void messageBodyReady(const QString &conversationId, const QString &messageId,
-                          const QString &body);
+                          const QString &body, const QString &bodyHtml,
+                          bool remoteContentBlocked);
     void attachmentSaved(bool ok, const QString &messageId, const QString &path);
     void ioStarted(const QString &accountId, bool ok, const QString &error);
     void ioStopped(const QString &accountId);

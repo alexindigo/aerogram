@@ -290,11 +290,14 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
          {{QStringLiteral("id"), messageId.toLongLong()}})
         .then([this, conversationId, messageId](QJsonValue r) {
             const QJsonObject o = r.toObject();
-            // NOTE: body is the decrypted raw body — HTML mail arrives
-            // as HTML here (mime_type tells). Plain-text transform is
-            // prototype follow-up.
-            emit messageBodyReady(conversationId, messageId,
-                                  o.value(QStringLiteral("text")).toString());
+            // text = plain (always safe), html = SDK-sanitized display
+            // html (remote content stripped), blocked flag drives the
+            // "remote content blocked" note.
+            emit messageBodyReady(
+                conversationId, messageId,
+                o.value(QStringLiteral("text")).toString(),
+                o.value(QStringLiteral("html")).toString(),
+                o.value(QStringLiteral("blocked_remote")).toBool());
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));

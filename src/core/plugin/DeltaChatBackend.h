@@ -383,7 +383,8 @@ public:
             .then([this, conversationId, messageId](QJsonValue r) {
                 const QJsonObject m = r.toObject().value(messageId).toObject();
                 emit messageBodyReady(conversationId, messageId,
-                                      m.value(QStringLiteral("text")).toString());
+                                      m.value(QStringLiteral("text")).toString(),
+                                      QString(), false);
             })
             .onFailed([this](const std::exception &e) {
                 emit errorOccurred(QString::fromUtf8(e.what()));

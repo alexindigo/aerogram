@@ -256,7 +256,8 @@ public:
             QString rel;
             if (key.isEmpty()) {
                 QMetaObject::invokeMethod(this, [this, conversationId, messageId]() {
-                    emit messageBodyReady(conversationId, messageId, QString());
+                    emit messageBodyReady(conversationId, messageId, QString(),
+                                          QString(), false);
                 }, Qt::QueuedConnection);
                 return;
             }
@@ -277,7 +278,8 @@ public:
             }
             QMetaObject::invokeMethod(this, [this, conversationId, messageId, body]() {
                 qInfo() << "ImapBackend: messageBodyReady" << messageId << body.size() << "chars";
-                emit messageBodyReady(conversationId, messageId, body);
+                emit messageBodyReady(conversationId, messageId, body,
+                                      QString(), false);
             }, Qt::QueuedConnection);
         }));
     }
