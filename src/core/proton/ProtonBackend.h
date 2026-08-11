@@ -86,6 +86,8 @@ private:
     QByteArray m_key;
     QString m_storeRoot;   // <dataDir>/store/storage
     QString m_indexDb;     // <dataDir>/store/index.db
+    QString m_inboxLocalId;         // INBOX's local label id (arrival persistence)
+    bool m_didInitialInboxStore = false;
     /// Persist a fetched message into the shared store + FTS index
     /// (synthesizes a faithful .eml from the api message's header+body).
     void persistMessage(const QString &conversationId, const QString &messageId,

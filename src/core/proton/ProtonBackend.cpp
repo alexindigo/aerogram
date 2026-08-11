@@ -122,8 +122,21 @@ void ProtonBackend::startEventLoop()
             } catch (...) {
                 continue;  // transient parse/core hiccup — keep polling
             }
-            if (!result.toArray().isEmpty())
+            if (!result.toArray().isEmpty()) {
+                const auto tags = result.toArray();
                 emit storageChanged();
+                // Message-table change: persist new arrivals' bodies into
+                // the local store right away (search + offline), not just
+                // when someone happens to open the folder. INBOX is the
+                // arrival point for incoming mail.
+                for (const QJsonValue &t : tags) {
+                    if (t.toString() == QLatin1String("messages")
+                            && !m_inboxLocalId.isEmpty() && !m_key.isEmpty()) {
+                        fetchMessages(m_inboxLocalId);  // emits + prefetches/persists
+                        break;
+                    }
+                }
+            }
         }
     });
 }
@@ -245,6 +258,13 @@ void ProtonBackend::fetchConversations()
                 c.lastActivity = QDateTime::currentDateTime();
                 convs.append(c);
             }
+            // Capture INBOX's local label id (used for arrival-time
+            // body persistence).
+            for (const Conversation &c : convs) {
+                if (c.name.compare(QStringLiteral("INBOX"), Qt::CaseInsensitive) == 0)
+                    m_inboxLocalId = c.id;
+            }
+
             emit conversationsReady(convs);
 
             // Right after login the SDK's initial sync may not have
@@ -256,6 +276,14 @@ void ProtonBackend::fetchConversations()
                 QTimer::singleShot(2000, this, [this] { fetchConversations(); });
             } else if (!convs.isEmpty()) {
                 m_labelRetries = 0;
+                // First time labels resolve after login: persist the
+                // inbox page so existing mail is in the store (search +
+                // offline) without waiting for the user to open it.
+                if (!m_didInitialInboxStore && !m_inboxLocalId.isEmpty()
+                        && !m_key.isEmpty()) {
+                    m_didInitialInboxStore = true;
+                    fetchMessages(m_inboxLocalId);
+                }
             }
         })
         .onFailed([this](const std::exception &e) {
