@@ -98,10 +98,31 @@ void ProtonBackend::shutdown()
         m_eventThread.join();
     }
     m_workers.waitForFinished();
+    {
+        QMutexLocker storeLock(&m_storeMutex);
+        delete m_storeIndex;
+        m_storeIndex = nullptr;
+    }
     if (m_core) {
         proton_core_free(m_core);
         m_core = nullptr;
     }
+}
+
+MetadataIndex *ProtonBackend::storeIndex()
+{
+    // Caller holds m_storeMutex. Lazy-open: the KDF runs once per
+    // backend session, not once per operation.
+    if (!m_storeIndex && !m_key.isEmpty()) {
+        m_storeIndex = new MetadataIndex(m_indexDb, m_key);
+        QString err;
+        if (!m_storeIndex->open(&err)) {
+            qWarning().noquote() << "ProtonBackend: index open failed:" << err;
+            delete m_storeIndex;
+            m_storeIndex = nullptr;
+        }
+    }
+    return m_storeIndex;
 }
 
 void ProtonBackend::purgeLocalData()
@@ -353,11 +374,10 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
             if (!m_key.isEmpty() && !m_shuttingDown
                     && qint64(messages.size()) == total) {
                 QMutexLocker storeLock(&m_storeMutex);
-                MetadataIndex idx(m_indexDb, m_key);
-                QString err;
-                if (idx.open(&err)) {
+                MetadataIndex *idx = storeIndex();
+                if (idx) {
                     const QVector<QString> gone =
-                        idx.removeMissingFromConversation(conversationId, presentIds);
+                        idx->removeMissingFromConversation(conversationId, presentIds);
                     if (!gone.isEmpty()) {
                         MessageStore store(m_storeRoot, m_key);
                         for (const QString &rel : gone)
@@ -407,10 +427,10 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
         QString cachedHtml;
         bool cachedBlocked = false;
         {
-            MetadataIndex idx(m_indexDb, m_key);
-            QString err;
-            if (idx.open(&err)) {
-                const QString rel = idx.filePathForMessage(messageId);
+            QMutexLocker storeLock(&m_storeMutex);
+            MetadataIndex *idx = storeIndex();
+            if (idx) {
+                const QString rel = idx->filePathForMessage(messageId);
                 if (!rel.isEmpty()) {
                     MessageStore store(m_storeRoot, m_key);
                     const QByteArray raw = store.get(rel);
@@ -550,11 +570,10 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     m.date = parsed.date;
     m.isUnread = false;
 
-    MetadataIndex idx(m_indexDb, m_key);
-    QString err;
-    if (!idx.open(&err))
+    MetadataIndex *idx = storeIndex();
+    if (!idx)
         return;
-    idx.insertMessages({m}, {parsed.bodyPlain}, {rel}, {{}});
+    idx->insertMessages({m}, {parsed.bodyPlain}, {rel}, {{}});
 }
 
 void ProtonBackend::wipeLocalStore()

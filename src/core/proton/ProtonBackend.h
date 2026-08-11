@@ -15,6 +15,7 @@
 // C ABI of aerogram-proton-core (Rust staticlib). All payloads are
 // JSON strings; results are {"ok": …} / {"err": …}.
 struct ProtonCore;
+class MetadataIndex;
 extern "C" {
 ProtonCore *proton_core_new(const char *dataDir);
 void proton_core_free(ProtonCore *core);
@@ -110,6 +111,12 @@ private:
     std::atomic<bool> m_shuttingDown{false};
     QFutureSynchronizer<void> m_workers;
     QMutex m_storeMutex;
+    /// Opened lazily under m_storeMutex once the master key exists.
+    /// One connection per backend: every open() pays SQLCipher's KDF
+    /// (~170ms) — per-operation opens were the hidden latency.
+    MetadataIndex *m_storeIndex = nullptr;
+    /// m_storeIndex accessor (lazy open); caller must hold m_storeMutex.
+    MetadataIndex *storeIndex();
 };
 
 #endif

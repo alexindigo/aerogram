@@ -9,6 +9,7 @@
 #include <QMetaObject>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QMutex>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrent>
 
@@ -83,6 +84,11 @@ public:
         if (m_pollTimer->isActive())
             m_pollTimer->stop();
         m_workers.waitForFinished();
+        {
+            QMutexLocker lock(&m_readIndexMutex);
+            delete m_readIndex;
+            m_readIndex = nullptr;
+        }
     }
 
     // -----------------------------------------------------------------
@@ -204,10 +210,9 @@ public:
             }
             QVector<Conversation> convs;
             {
-                MetadataIndex idx(dbPath, key);
-                QString err;
-                if (idx.open(&err))
-                    convs = idx.conversations();
+                QMutexLocker lock(&m_readIndexMutex);
+                if (MetadataIndex *idx = readIndex())
+                    convs = idx->conversations();
             }
             QMetaObject::invokeMethod(this, [this, convs]() {
                 emit conversationsReady(convs);
@@ -233,10 +238,9 @@ public:
                 return;
             }
             {
-                MetadataIndex idx(dbPath, key);
-                QString err;
-                if (idx.open(&err))
-                    msgs = idx.messages(conversationId);
+                QMutexLocker lock(&m_readIndexMutex);
+                if (MetadataIndex *idx = readIndex())
+                    msgs = idx->messages(conversationId);
             }
             QMetaObject::invokeMethod(this, [this, conversationId, msgs]() {
                 qInfo() << "ImapBackend: messagesReady" << conversationId << msgs.size() << "messages";
@@ -264,10 +268,9 @@ public:
                 return;
             }
             {
-                MetadataIndex idx(dbPath, key);
-                QString err;
-                if (idx.open(&err))
-                    rel = idx.filePathForMessage(messageId);
+                QMutexLocker lock(&m_readIndexMutex);
+                if (MetadataIndex *idx = readIndex())
+                    rel = idx->filePathForMessage(messageId);
             }
             if (!rel.isEmpty()) {
                 MessageStore store(storageRoot, key);
@@ -312,10 +315,9 @@ public:
                 return;
             }
             {
-                MetadataIndex idx(dbPath, key);
-                QString err;
-                if (idx.open(&err))
-                    rel = idx.filePathForMessage(messageId);
+                QMutexLocker lock(&m_readIndexMutex);
+                if (MetadataIndex *idx = readIndex())
+                    rel = idx->filePathForMessage(messageId);
             }
             if (!rel.isEmpty()) {
                 MessageStore store(storageRoot, key);
@@ -530,6 +532,24 @@ private:
     QFutureSynchronizer<void> m_workers;
     std::atomic<bool> m_shuttingDown{false};
     bool m_syncInFlight = false;
+    /// Shared read connection to the index — every MetadataIndex::open()
+    /// pays SQLCipher's KDF (~170ms), which taxed EVERY folder/body read.
+    /// Lazily opened under m_readIndexMutex; freed in shutdown().
+    class MetadataIndex *m_readIndex = nullptr;
+    QMutex m_readIndexMutex;
+    class MetadataIndex *readIndex()
+    {
+        if (!m_readIndex && !m_key.isEmpty()) {
+            m_readIndex = new MetadataIndex(m_dbPath, m_key);
+            QString err;
+            if (!m_readIndex->open(&err)) {
+                qWarning() << "ImapBackend: index open failed:" << err;
+                delete m_readIndex;
+                m_readIndex = nullptr;
+            }
+        }
+        return m_readIndex;
+    }
 };
 
 #endif
