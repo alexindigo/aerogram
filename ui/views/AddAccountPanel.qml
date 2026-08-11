@@ -209,7 +209,7 @@ Item {
                                         onTextChanged: {
                                             const v = root.values
                                             v[fieldLoader.modelData.key] = text
-                                            root.values = v
+                                            root.values = Object.assign({}, v)
                                         }
                                     }
 
@@ -225,7 +225,7 @@ Item {
                                     onDecoded: (text) => {
                                         const v = root.values
                                         v[fieldLoader.modelData.key] = text
-                                        root.values = v
+                                        root.values = Object.assign({}, v)
                                         qrTextField.text = text
                                     }
                                 }
