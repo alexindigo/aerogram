@@ -20,7 +20,7 @@
 #include "CurlTransport.h"
 #include "core/store/MessageStore.h"
 #include "core/store/MetadataIndex.h"
-#include "MimeParser.h"
+#include "core/content/ContentPipeline.h"
 
 /// \brief IMAP backend prototype: libcurl transport + minimal MIME
 ///        parser + hash-sharded .eml storage + SQLite FTS5 index.
@@ -253,6 +253,8 @@ public:
         track(QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
             if (m_shuttingDown) return;
             QString body;
+            QString html;
+            bool blockedRemote = false;
             QString rel;
             if (key.isEmpty()) {
                 QMetaObject::invokeMethod(this, [this, conversationId, messageId]() {
@@ -271,15 +273,19 @@ public:
                 MessageStore store(storageRoot, key);
                 const QByteArray raw = store.get(rel);
                 qInfo() << "ImapBackend: body fetch" << messageId << "raw" << raw.size() << "bytes";
-                if (!raw.isEmpty())
-                    body = MimeParser::parse(raw).bodyPlain;
+                if (!raw.isEmpty()) {
+                    const auto parsed = ContentPipeline::parse(raw);
+                    body = parsed.bodyPlain;
+                    html = parsed.bodyHtmlSafe;
+                    blockedRemote = parsed.remoteContentBlocked;
+                }
             } else {
                 qInfo() << "ImapBackend: body fetch" << messageId << "no file_path in index";
             }
-            QMetaObject::invokeMethod(this, [this, conversationId, messageId, body]() {
+            QMetaObject::invokeMethod(this, [this, conversationId, messageId, body, html, blockedRemote]() {
                 qInfo() << "ImapBackend: messageBodyReady" << messageId << body.size() << "chars";
                 emit messageBodyReady(conversationId, messageId, body,
-                                      QString(), false);
+                                      html, blockedRemote);
             }, Qt::QueuedConnection);
         }));
     }
@@ -315,7 +321,7 @@ public:
                 MessageStore store(storageRoot, key);
                 const QByteArray raw = store.get(rel);
                 if (!raw.isEmpty()) {
-                    const QByteArray bytes = MimeParser::extractAttachment(raw, partIndex);
+                    const QByteArray bytes = ContentPipeline::extractAttachment(raw, partIndex);
                     if (!bytes.isEmpty()) {
                         QFile out(dest);
                         if (out.open(QIODevice::WriteOnly) && out.write(bytes) == bytes.size())
@@ -437,7 +443,7 @@ private:
                         continue;
                     }
 
-                    const MimeParser::ParsedMessage parsed = MimeParser::parse(raw);
+                    const auto parsed = ContentPipeline::parse(raw);
 
                     Message m;
                     m.messageId = !parsed.messageId.isEmpty()
@@ -447,13 +453,13 @@ private:
                     m.subject = parsed.subject;
                     m.sender = parsed.sender;
                     m.date = parsed.date;
-                    m.snippet = MimeParser::snippetFrom(parsed.bodyPlain);
+                    m.snippet = ContentPipeline::snippetFrom(parsed.bodyPlain);
                     m.isUnread = !seen;
 
                     msgs.append(m);
                     bodies.append(parsed.bodyPlain);
                     paths.append(store.put(raw, m.messageId));
-                    atts.append(MimeParser::listAttachments(raw));
+                    atts.append(parsed.attachments);
                     presentIds.insert(m.messageId);
 
                     if (m.isUnread) ++unseen;

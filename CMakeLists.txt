@@ -8,6 +8,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2 Concurrent Multimedia)
 find_package(ZXing REQUIRED)
 find_package(KF6Kirigami REQUIRED)
+find_package(KF6Mime REQUIRED)
 find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLCIPHER REQUIRED sqlcipher)
@@ -41,6 +42,8 @@ qt_add_executable(aerogram
     src/core/proton/ProtonBackend.h
     src/core/proton/ProtonBackend.cpp
     src/core/content/HtmlSanitizer.h
+    src/core/content/ContentPipeline.h
+    src/core/content/ContentPipeline.cpp
     src/ui/QrCodeHelper.h
 )
 
@@ -141,6 +144,7 @@ target_link_libraries(aerogram PRIVATE
     Qt6::Concurrent
     Qt6::Multimedia
     KF6::Kirigami
+    KF6::Mime
     CURL::libcurl
     ZXing::ZXing
     ${SQLCIPHER_LIBRARIES}
