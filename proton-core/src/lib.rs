@@ -701,6 +701,9 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         "html": html,
         "blocked_remote": blocked_remote,
         "mime_type": format!("{:?}", body.mime_type),
+        // Raw RFC822 header block — used to persist the message as a
+        // faithful .eml in the shared store (same format as IMAP).
+        "header": body.metadata.header,
     }))
 }
 

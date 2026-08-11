@@ -9,6 +9,10 @@
 #include <QTimer>
 #include <QtConcurrent>
 
+#include "../imap/MessageStore.h"
+#include "../imap/MetadataIndex.h"
+#include "../imap/MimeParser.h"
+
 #include <exception>
 #include <memory>
 #include <stdexcept>
@@ -64,6 +68,12 @@ bool ProtonBackend::initialize(const QVariantMap &params)
     m_dataDir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
               + QStringLiteral("/proton/") + tag;
     QDir().mkpath(m_dataDir);
+
+    // Local store lives beside the SDK's session data; purgeLocalData
+    // removes m_dataDir wholesale, covering both.
+    m_storeRoot = m_dataDir + QStringLiteral("/store/storage");
+    m_indexDb = m_dataDir + QStringLiteral("/store/index.db");
+    QDir().mkpath(m_storeRoot);
 
     m_core = proton_core_new(m_dataDir.toUtf8().constData());
     if (!m_core) {
@@ -278,6 +288,27 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
                 messages.append(m);
             }
             emit messagesReady(conversationId, messages);
+
+            // Prefetch bodies into the local store (first N) so opens
+            // are instant and the FTS index builds a search corpus.
+            // Quiet: persistMessage only — no messageBodyReady (must not
+            // clobber whatever message is open).
+            if (!m_key.isEmpty()) {
+                const int prefetchCount = qMin(20, messages.size());
+                for (int i = 0; i < prefetchCount; ++i) {
+                    const QString mid = messages.at(i).messageId;
+                    call(QStringLiteral("message_body"),
+                         {{QStringLiteral("id"), mid.toLongLong()}})
+                        .then([this, conversationId, mid](QJsonValue rb) {
+                            const QJsonObject o = rb.toObject();
+                            persistMessage(conversationId, mid, o,
+                                           o.value(QStringLiteral("text")).toString());
+                        })
+                        .onFailed([](const std::exception &) {
+                            // prefetch is best-effort; ignore
+                        });
+                }
+            }
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));
@@ -286,6 +317,37 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
 
 void ProtonBackend::fetchMessageBody(const QString &conversationId, const QString &messageId)
 {
+    // Store-first: a previously fetched message reads from the local
+    // encrypted store (instant, offline). Only a miss hits the SDK.
+    if (!m_key.isEmpty()) {
+        QString cachedText;
+        QString cachedHtml;
+        {
+            MetadataIndex idx(m_indexDb, m_key);
+            QString err;
+            if (idx.open(&err)) {
+                const QString rel = idx.filePathForMessage(messageId);
+                if (!rel.isEmpty()) {
+                    MessageStore store(m_storeRoot, m_key);
+                    const QByteArray raw = store.get(rel);
+                    if (!raw.isEmpty()) {
+                        // Stored as a faithful .eml — parse like IMAP.
+                        const auto parsed = MimeParser::parse(raw);
+                        cachedText = parsed.bodyPlain;
+                        cachedHtml = parsed.bodyHtml;  // already sanitized
+                    }
+                }
+            }
+        }
+        if (!cachedText.isEmpty()) {
+            // Instant + offline. bodyHtml came from the store (already
+            // sanitized at fetch time); remote content stays blocked.
+            emit messageBodyReady(conversationId, messageId, cachedText,
+                                  cachedHtml, !cachedHtml.isEmpty());
+            return;
+        }
+    }
+
     call(QStringLiteral("message_body"),
          {{QStringLiteral("id"), messageId.toLongLong()}})
         .then([this, conversationId, messageId](QJsonValue r) {
@@ -293,15 +355,122 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
             // text = plain (always safe), html = SDK-sanitized display
             // html (remote content stripped), blocked flag drives the
             // "remote content blocked" note.
+            const QString text = o.value(QStringLiteral("text")).toString();
+            persistMessage(conversationId, messageId, o, text);
             emit messageBodyReady(
-                conversationId, messageId,
-                o.value(QStringLiteral("text")).toString(),
+                conversationId, messageId, text,
                 o.value(QStringLiteral("html")).toString(),
                 o.value(QStringLiteral("blocked_remote")).toBool());
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));
         });
+}
+
+/// \brief Synthesize a faithful RFC822 message (.eml) from the original
+///        header block + the decrypted/sanitized bodies, in the same
+///        format IMAP stores. Kept headers (From/To/Subject/Date/
+///        Message-ID/Cc…); Content-* and MIME-Version are regenerated
+///        to describe the new multipart/alternative body.
+static QByteArray buildEml(const QString &rawHeader, const QString &plainBody,
+                           const QString &htmlBody)
+{
+    // Parse the original header block (append CRLF CRLF so splitMessage
+    // sees a complete message with an empty body).
+    const auto orig = MimeParser::splitMessage(
+        rawHeader.toUtf8() + "\r\n\r\n");
+
+    QByteArray out;
+    auto putLine = [&out](const QString &name, const QString &value) {
+        if (!value.isEmpty())
+            out += name.toUtf8() + ": " + value.toUtf8() + "\r\n";
+    };
+    for (auto it = orig.headers.begin(); it != orig.headers.end(); ++it) {
+        const QString k = it.key().toLower();
+        if (k.startsWith(QStringLiteral("content-"))
+            || k == QLatin1String("mime-version"))
+            continue;  // regenerated below for the new body structure
+        out += it.key().toUtf8() + ": " + it.value().toUtf8() + "\r\n";
+    }
+
+    if (htmlBody.isEmpty()) {
+        putLine(QStringLiteral("MIME-Version"), QStringLiteral("1.0"));
+        putLine(QStringLiteral("Content-Type"),
+                QStringLiteral("text/plain; charset=utf-8"));
+        putLine(QStringLiteral("Content-Transfer-Encoding"),
+                QStringLiteral("base64"));
+        out += "\r\n";
+        out += plainBody.toUtf8().toBase64();
+        out += "\r\n";
+        return out;
+    }
+
+    const QByteArray boundary = "aerogram-" + QByteArray::number(
+        qHash(plainBody + htmlBody), 36);
+    putLine(QStringLiteral("MIME-Version"), QStringLiteral("1.0"));
+    putLine(QStringLiteral("Content-Type"),
+            QStringLiteral("multipart/alternative; boundary=\"")
+            + QString::fromLatin1(boundary) + QStringLiteral("\""));
+    out += "\r\n";
+
+    out += "--" + boundary + "\r\n"
+           "Content-Type: text/plain; charset=utf-8\r\n"
+           "Content-Transfer-Encoding: base64\r\n\r\n"
+        + plainBody.toUtf8().toBase64() + "\r\n";
+
+    out += "--" + boundary + "\r\n"
+           "Content-Type: text/html; charset=utf-8\r\n"
+           "Content-Transfer-Encoding: base64\r\n\r\n"
+        + htmlBody.toUtf8().toBase64() + "\r\n";
+
+    out += "--" + boundary + "--\r\n";
+    return out;
+}
+
+/// \brief Persist a fetched message as a faithful .eml into the shared
+///        store (encrypted shard) + FTS index — the same format IMAP
+///        uses, so Proton mail is searchable and offline-readable.
+///        Runs on the calling (FFI worker) thread; store/index are
+///        self-contained per-account.
+void ProtonBackend::persistMessage(const QString &conversationId,
+                                   const QString &messageId,
+                                   const QJsonObject &apiMsg,
+                                   const QString &plainBody)
+{
+    if (m_key.isEmpty() || plainBody.isEmpty())
+        return;
+
+    const QByteArray eml = buildEml(apiMsg.value(QStringLiteral("header")).toString(),
+                                    plainBody,
+                                    apiMsg.value(QStringLiteral("html")).toString());
+    const auto parsed = MimeParser::parse(eml);
+
+    MessageStore store(m_storeRoot, m_key);
+    const QString rel = store.put(eml, messageId);
+
+    Message m;
+    m.messageId = messageId;
+    m.conversationId = conversationId;
+    m.subject = parsed.subject;
+    m.sender = parsed.sender;
+    m.date = parsed.date;
+    m.isUnread = false;
+
+    MetadataIndex idx(m_indexDb, m_key);
+    QString err;
+    if (!idx.open(&err))
+        return;
+    idx.insertMessages({m}, {parsed.bodyPlain}, {rel}, {{}});
+}
+
+void ProtonBackend::wipeLocalStore()
+{
+    if (!m_storeRoot.isEmpty())
+        QDir(m_storeRoot).removeRecursively();
+    const QString storeDir = QFileInfo(m_indexDb).absolutePath();
+    if (!storeDir.isEmpty())
+        QDir(storeDir).removeRecursively();
+    QDir().mkpath(m_storeRoot);
 }
 
 void ProtonBackend::saveAttachment(const QString &messageId, int partIndex,

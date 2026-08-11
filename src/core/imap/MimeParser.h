@@ -24,7 +24,11 @@ struct ParsedMessage
     QString sender;
     QDateTime date;
     QString bodyPlain;
+    QString bodyHtml;   // raw text/html part, if any (NOT sanitized)
 };
+
+// Forward declaration — defined after extractText.
+inline QString extractHtml(const QByteArray &raw, int depth = 0);
 
 inline QByteArray qpDecode(const QByteArray &in)
 {
@@ -344,7 +348,61 @@ inline ParsedMessage parse(const QByteArray &raw)
         out.date = QDateTime::currentDateTime();
 
     out.bodyPlain = extractText(raw);
+    out.bodyHtml = extractHtml(raw);
     return out;
+}
+
+/// \brief Extract the text/html part verbatim (NOT sanitized — callers
+///        must treat it as untrusted). Mirrors extractText's walk but
+///        prefers html. Empty when the message has no html part.
+inline QString extractHtml(const QByteArray &raw, int depth)
+{
+    if (depth > 4) return {};
+
+    const Part p = splitMessage(raw);
+    const QString ct = p.headers.value(QStringLiteral("content-type"),
+                                       QStringLiteral("text/plain"));
+    const QString cte = p.headers.value(QStringLiteral("content-transfer-encoding"));
+
+    if (ct.startsWith(QStringLiteral("multipart/"), Qt::CaseInsensitive)) {
+        const QString boundary = headerParam(ct, QStringLiteral("boundary"));
+        if (boundary.isEmpty()) return {};
+
+        const QByteArray delim = "--" + boundary.toUtf8();
+        QList<QByteArray> parts;
+        qsizetype pos = 0;
+        while (true) {
+            const qsizetype idx = p.body.indexOf(delim, pos);
+            if (idx < 0) {
+                parts.append(p.body.mid(pos));
+                break;
+            }
+            parts.append(p.body.mid(pos, idx - pos));
+            pos = idx + delim.size();
+        }
+        QString html;
+        for (const QByteArray &partRaw : parts) {
+            const QByteArray trimmed = partRaw.trimmed();
+            if (trimmed.isEmpty() || trimmed == "--") continue;
+            const Part sub = splitMessage(trimmed);
+            const QString subCt = sub.headers.value(QStringLiteral("content-type"),
+                                                    QStringLiteral("text/plain"));
+            if (subCt.startsWith(QStringLiteral("multipart/"), Qt::CaseInsensitive)) {
+                const QString nested = extractHtml(trimmed, depth + 1);
+                if (!nested.isEmpty()) return nested;
+            } else if (subCt.startsWith(QStringLiteral("text/html"), Qt::CaseInsensitive)) {
+                if (html.isEmpty())
+                    html = QString::fromUtf8(decodeBody(sub.body,
+                        sub.headers.value(QStringLiteral("content-transfer-encoding"))));
+            }
+        }
+        return html;
+    }
+
+    if (ct.startsWith(QStringLiteral("text/html"), Qt::CaseInsensitive))
+        return QString::fromUtf8(decodeBody(p.body, cte));
+
+    return {};
 }
 
 inline QString snippetFrom(const QString &bodyPlain)

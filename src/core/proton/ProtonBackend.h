@@ -32,7 +32,8 @@ void proton_free_string(char *s);
 class ProtonBackend : public BackendPlugin,
                       public IConversationProvider,
                       public IMessageProvider,
-                      public ICredentialsSetup
+                      public ICredentialsSetup,
+                      public IMasterKeyAware
 {
     Q_OBJECT
 
@@ -62,6 +63,11 @@ public:
     void saveAttachment(const QString &messageId, int partIndex,
                         const QString &destinationPath) override;
 
+    // IMasterKeyAware — the local store (encrypted shards + FTS index)
+    // is keyed by the vault master key, like IMAP.
+    void setMasterKey(const QByteArray &key) override { m_key = key; }
+    void wipeLocalStore() override;
+
 private:
     /// Run one core call on a worker thread; the promise fulfils with
     /// the "ok" payload or fails with the "err" message. Returns the
@@ -74,6 +80,16 @@ private:
     int m_labelRetries = 0;        // post-login label sync patience
     QVariantMap m_credentials;
     QString m_dataDir;
+
+    // Local store (same format as IMAP: encrypted .eml shards + SQLCipher
+    // FTS index). Populated as bodies are fetched.
+    QByteArray m_key;
+    QString m_storeRoot;   // <dataDir>/store/storage
+    QString m_indexDb;     // <dataDir>/store/index.db
+    /// Persist a fetched message into the shared store + FTS index
+    /// (synthesizes a faithful .eml from the api message's header+body).
+    void persistMessage(const QString &conversationId, const QString &messageId,
+                        const QJsonObject &apiMsg, const QString &plainBody);
 
     // Push: one dedicated thread long-polls proton_call("wait_event")
     // (2s timeout inside) and emits storageChanged on non-empty
