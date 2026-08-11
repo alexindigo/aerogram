@@ -25,7 +25,7 @@ fn main() {
     for l in labels["ok"].as_array().unwrap() {
         let id = l["id"].as_u64().unwrap();
         let msgs = call("list_messages", &format!(r#"{{"label_id":{id},"limit":15}}"#));
-        for m in msgs["ok"].as_array().unwrap() {
+        for m in msgs["ok"]["messages"].as_array().unwrap() {
             let Some(mid) = m["id"].as_u64() else { continue };
             let t0 = Instant::now();
             let b = call("message_body", &format!(r#"{{"id":{mid}}}"#));

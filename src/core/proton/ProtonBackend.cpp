@@ -297,8 +297,15 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
          {{QStringLiteral("label_id"), conversationId.toLongLong()},
           {QStringLiteral("limit"), 100}})
         .then([this, conversationId](QJsonValue r) {
+            // Shape: {"messages": [...], "total": N}. `total` is the
+            // pre-limit count — when we hold all N, the listing is
+            // complete and deletions can be reconciled safely.
+            const QJsonObject payload = r.toObject();
+            const QJsonArray arr = payload.value(QStringLiteral("messages")).toArray();
+            const qint64 total = payload.value(QStringLiteral("total")).toInteger();
             QVector<Message> messages;
-            for (const QJsonValue &v : r.toArray()) {
+            QSet<QString> presentIds;
+            for (const QJsonValue &v : arr) {
                 const QJsonObject o = v.toObject();
                 Message m;
                 m.messageId = QString::number(o.value(QStringLiteral("id")).toInteger());
@@ -314,8 +321,29 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
                 // Attachment chips need per-part metadata; that rides
                 // with the body fetch in v1.
                 messages.append(m);
+                presentIds.insert(m.messageId);
             }
             emit messagesReady(conversationId, messages);
+
+            // Deletion sync: when the listing is COMPLETE (we hold all
+            // `total` rows), anything in our index but absent here was
+            // deleted server-side — remove it (index rows + store
+            // shards). Skipped for truncated listings.
+            if (!m_key.isEmpty() && qint64(messages.size()) == total) {
+                MetadataIndex idx(m_indexDb, m_key);
+                QString err;
+                if (idx.open(&err)) {
+                    const QVector<QString> gone =
+                        idx.removeMissingFromConversation(conversationId, presentIds);
+                    if (!gone.isEmpty()) {
+                        MessageStore store(m_storeRoot, m_key);
+                        for (const QString &rel : gone)
+                            store.remove(rel);
+                        qInfo() << "ProtonBackend: reconciled" << conversationId
+                                << "— removed" << gone.size() << "deleted message(s)";
+                    }
+                }
+            }
 
             // Prefetch bodies into the local store (first N) so opens
             // are instant and the FTS index builds a search corpus.

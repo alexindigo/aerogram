@@ -424,13 +424,18 @@ private:
                 qint64 newest = 0;
                 int unseen = 0;
                 QString newestSubject;
+                bool folderComplete = true;   // no shutdown break mid-folder
+                bool fetchFailed = false;     // no transient fetch errors
 
+                QSet<QString> presentIds;
                 for (const int uid : uids) {
-                    if (shuttingDown) break;      // checkpoint between messages
+                    if (shuttingDown) { folderComplete = false; break; }
                     QByteArray raw;
                     bool seen = false;
-                    if (!t.fetchMessage(folder, uid, raw, seen, &err) || raw.isEmpty())
+                    if (!t.fetchMessage(folder, uid, raw, seen, &err) || raw.isEmpty()) {
+                        fetchFailed = true;   // transient: don't reconcile
                         continue;
+                    }
 
                     const MimeParser::ParsedMessage parsed = MimeParser::parse(raw);
 
@@ -449,6 +454,7 @@ private:
                     bodies.append(parsed.bodyPlain);
                     paths.append(store.put(raw, m.messageId));
                     atts.append(MimeParser::listAttachments(raw));
+                    presentIds.insert(m.messageId);
 
                     if (m.isUnread) ++unseen;
                     const qint64 secs = m.date.toSecsSinceEpoch();
@@ -459,6 +465,20 @@ private:
                 }
 
                 idx.insertMessages(msgs, bodies, paths, atts);
+
+                // Deletion sync: the server's listing is the truth.
+                // Only reconcile a folder we listed COMPLETELY with no
+                // transient fetch failures — anything less would delete
+                // mail we merely failed to read this pass.
+                if (folderComplete && !fetchFailed) {
+                    const QVector<QString> gone =
+                        idx.removeMissingFromConversation(folder, presentIds);
+                    for (const QString &rel : gone)
+                        store.remove(rel);
+                    if (!gone.isEmpty())
+                        qInfo() << "ImapBackend: reconciled" << folder
+                                << "— removed" << gone.size() << "deleted message(s)";
+                }
 
                 Conversation c;
                 c.id = folder;

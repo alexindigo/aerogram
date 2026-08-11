@@ -628,6 +628,9 @@ async fn list_messages(core: &ProtonCore, params: Value) -> Result<Value, String
             }
         }
 
+        // Total BEFORE the limit cut — the caller needs it to know when
+        // the listing is complete (safe to reconcile deletions).
+        let total = messages.len();
         let mut out = Vec::new();
         for m in messages.into_iter().take(limit) {
             out.push(json!({
@@ -641,7 +644,7 @@ async fn list_messages(core: &ProtonCore, params: Value) -> Result<Value, String
                 "attachments": m.num_attachments,
             }));
         }
-        return Ok(Value::Array(out));
+        return Ok(json!({ "messages": out, "total": total }));
     }
 }
 

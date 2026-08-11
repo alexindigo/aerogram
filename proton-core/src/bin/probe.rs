@@ -54,7 +54,7 @@ fn main() {
         for l in arr {
             let id = l["id"].as_u64().unwrap();
             let msgs = call("list_messages", &format!(r#"{{"label_id":{id},"limit":1}}"#));
-            if let Some(first) = msgs.get("ok").and_then(|v| v.as_array()).and_then(|a| a.first()) {
+            if let Some(first) = msgs.get("ok").and_then(|v| v["messages"].as_array()).and_then(|a| a.first()) {
                 if let Some(mid) = first["id"].as_u64() {
                     let body = call("message_body", &format!(r#"{{"id":{mid}}}"#));
                     if let Some(ok) = body.get("ok") {

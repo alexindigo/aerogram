@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QFile>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -303,6 +304,60 @@ public:
             out = columnText(st, 0);
         sqlite3_finalize(st);
         return out;
+    }
+
+    /// \brief Reconcile a conversation against the server's truth:
+    ///        delete local rows whose message_id is absent from
+    ///        presentIds, including their FTS and attachment rows
+    ///        (foreign_keys is NOT on — no cascade). Returns the removed
+    ///        rows' store paths so the caller can delete the shards.
+    ///
+    ///        ONLY call with a COMPLETE present-set for the
+    ///        conversation — a partial listing would wipe real mail.
+    QVector<QString> removeMissingFromConversation(const QString &conversationId,
+                                                   const QSet<QString> &presentIds)
+    {
+        QVector<QPair<sqlite3_int64, QString>> doomed;
+        {
+            sqlite3_stmt *st = nullptr;
+            if (sqlite3_prepare_v2(m_db,
+                    "SELECT id, message_id, file_path FROM messages"
+                    " WHERE conversation_id = ?;", -1, &st, nullptr) != SQLITE_OK)
+                return {};
+            bindText(st, 1, conversationId);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                const QString mid = columnText(st, 1);
+                if (!presentIds.contains(mid))
+                    doomed.append({sqlite3_column_int64(st, 0), columnText(st, 2)});
+            }
+            sqlite3_finalize(st);
+        }
+        if (doomed.isEmpty())
+            return {};
+
+        QVector<QString> removedPaths;
+        exec("BEGIN TRANSACTION;");
+        sqlite3_stmt *delMsg = nullptr;
+        sqlite3_stmt *delFts = nullptr;
+        sqlite3_stmt *delAtt = nullptr;
+        sqlite3_prepare_v2(m_db, "DELETE FROM messages WHERE id = ?;", -1, &delMsg, nullptr);
+        sqlite3_prepare_v2(m_db, "DELETE FROM messages_fts WHERE rowid = ?;", -1, &delFts, nullptr);
+        sqlite3_prepare_v2(m_db, "DELETE FROM attachments WHERE message_id = ?;", -1, &delAtt, nullptr);
+        for (const auto &row : doomed) {
+            sqlite3_bind_int64(delMsg, 1, row.first);
+            sqlite3_step(delMsg); sqlite3_reset(delMsg);
+            sqlite3_bind_int64(delFts, 1, row.first);
+            sqlite3_step(delFts); sqlite3_reset(delFts);
+            sqlite3_bind_int64(delAtt, 1, row.first);
+            sqlite3_step(delAtt); sqlite3_reset(delAtt);
+            if (!row.second.isEmpty())
+                removedPaths.append(row.second);
+        }
+        sqlite3_finalize(delMsg);
+        sqlite3_finalize(delFts);
+        sqlite3_finalize(delAtt);
+        exec("COMMIT;");
+        return removedPaths;
     }
 
 private:

@@ -35,6 +35,14 @@ public:
         }
     }
 
+    /// \brief Delete a stored shard (message deleted on the server —
+    ///        removal must reach disk, not just the index).
+    void remove(const QString &rel)
+    {
+        if (!rel.isEmpty())
+            QFile::remove(m_root + QLatin1Char('/') + rel);
+    }
+
     /// \brief Encrypt + store raw bytes; returns the relative path
     ///        (shard form). \p keyHint should be the Message-ID (or
     ///        folder:uid fallback).
