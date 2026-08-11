@@ -41,6 +41,9 @@ class AccountController : public QObject
     // Picker-visible backend schemas from the registry (constant after
     // startup registration in main.cpp).
     Q_PROPERTY(QVariantList availableBackends READ availableBackends CONSTANT)
+    // True while a provisional addAccount attempt is in flight
+    // (spinner in the add-account panel).
+    Q_PROPERTY(bool accountAddInProgress READ accountAddInProgress NOTIFY accountAddInProgressChanged)
     Q_PROPERTY(bool isLocked READ isLocked NOTIFY isLockedChanged)
     Q_PROPERTY(QString lockStatusText READ lockStatusText NOTIFY lockStatusTextChanged)
     Q_PROPERTY(bool vaultExists READ vaultExists NOTIFY vaultStateChanged)
@@ -68,6 +71,7 @@ public:
     QVariantList activeMessages() const;
     QVariantList panelLayout() const;
     QVariantList availableBackends() const;
+    bool accountAddInProgress() const { return !m_pendingAdds.isEmpty(); }
     bool isLocked() const;
     QString lockStatusText() const;
     bool vaultExists() const;
@@ -122,6 +126,7 @@ signals:
     void lockStatusTextChanged();
     void vaultStateChanged();
     void backendsChanged();
+    void accountAddInProgressChanged();
     void lockOverlayVisibilityChanged();
     void attachmentSaveStatusChanged();
 
@@ -133,8 +138,12 @@ private:
     void setActiveMessages(const QVariantList &messages);
     void recomputeLayout();
 
+    /// \brief Wire a backend into the account registry. driveConfigure
+    ///        = false when the caller already ran the backend's setup
+    ///        (addAccount's provisional attempt) — otherwise the
+    ///        backend would configure twice (double login).
     void registerAccount(const QString &type, const QVariantMap &credentials,
-                         BackendPlugin *backend);
+                         BackendPlugin *backend, bool driveConfigure = true);
     void connectBackend(const Account &account);
     Account *accountById(const QString &accountId);
     Account *accountForConversation(const QString &compoundConversationId,

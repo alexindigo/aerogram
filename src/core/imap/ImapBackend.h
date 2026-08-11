@@ -142,6 +142,7 @@ public:
             return;
         }
         // Verify credentials with a LIST before declaring IO started.
+        emit setupProgress(QStringLiteral("Verifying server connection…"));
         const QString host = m_host, user = m_user, pass = m_pass;
         const int port = m_port;
         const bool tls = m_tls;

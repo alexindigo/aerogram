@@ -66,6 +66,7 @@ private:
 
     ProtonCore *m_core = nullptr;  // owned; freed in shutdown()
     bool m_configured = false;     // login completed at least once
+    bool m_ioRequested = false;    // controller asked for IO pre-login
     int m_labelRetries = 0;        // post-login label sync patience
     QVariantMap m_credentials;
     QString m_dataDir;

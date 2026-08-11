@@ -41,6 +41,12 @@ signals:
     void ioStarted(bool ok, const QString &error);
     void ioStopped();
 
+    /// \brief Setup progress narration ("Authenticating…", "Syncing
+    ///        folders…") while a first-time account setup is in flight.
+    ///        Human-readable, current-step-only; the controller shows
+    ///        it verbatim in the add-account panel.
+    void setupProgress(const QString &stage);
+
     // Content (emitted by capability implementations)
     void conversationsReady(const QVector<Conversation> &conversations);
     void messagesReady(const QString &conversationId, const QVector<Message> &messages);

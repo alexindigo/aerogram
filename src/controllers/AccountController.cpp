@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QTimer>
 
 #include <algorithm>
 
@@ -305,28 +306,38 @@ QString identityColor(const QString &key)
 
 } // namespace
 
+/// \brief The one place that knows how an account id is derived from
+///        credentials: user@host (imap-like), a bare address in "user"
+///        (proton), else the type name (deltachat/mock) — plus #type.
+static QString computeAccountId(const QString &type, const QVariantMap &credentials,
+                                QString *labelOut = nullptr)
+{
+    const QString user = credentials.value(QStringLiteral("user")).toString();
+    const QString host = credentials.value(QStringLiteral("host")).toString();
+    QString label;
+    if (!user.isEmpty() && !host.isEmpty())
+        label = user + QLatin1Char('@') + host;
+    else if (user.contains(QLatin1Char('@')))
+        label = user;
+    else
+        label = type;
+    if (labelOut)
+        *labelOut = label;
+    return label + QLatin1Char('#') + type;
+}
+
+
 void AccountController::registerAccount(const QString &type, const QVariantMap &credentials,
-                                        BackendPlugin *backend)
+                                        BackendPlugin *backend, bool driveConfigure)
 {
     Account a;
     a.type = type;
     a.backend = backend;
     a.credentials = credentials;
 
-    // Label: user@host when the credential shape has both (imap-like);
-    // a user that is itself a full address (proton) as-is; otherwise
-    // the type name (deltachat/mock).
-    const QString user = credentials.value(QStringLiteral("user")).toString();
-    const QString host = credentials.value(QStringLiteral("host")).toString();
-    if (!user.isEmpty() && !host.isEmpty())
-        a.label = user + QLatin1Char('@') + host;
-    else if (user.contains(QLatin1Char('@')))
-        a.label = user;
-    else
-        a.label = type;
-
-    // Sketch format: <backend_id>#<backend> — e.g. alice@gmail.com#imap
-    a.id = a.label + QLatin1Char('#') + type;
+    // Label/id derivation lives in one helper so the provisional
+    // addAccount path and this one can never disagree.
+    a.id = computeAccountId(type, credentials, &a.label);
 
     a.index = m_accounts.size();
     // Color keys on the LABEL (bare address), never the id: the backend
@@ -339,9 +350,12 @@ void AccountController::registerAccount(const QString &type, const QVariantMap &
     m_accounts.append(a);
     connectBackend(m_accounts.last());
     // configure() emits configured() — must run after connectBackend so
-    // the signal isn't lost.
-    if (auto *c = dynamic_cast<ICredentialsSetup *>(backend))
-        c->configure(credentials);
+    // the signal isn't lost. Callers that already drove the backend
+    // through a provisional attempt (addAccount) pass false here.
+    if (driveConfigure) {
+        if (auto *c = dynamic_cast<ICredentialsSetup *>(backend))
+            c->configure(credentials);
+    }
     rebuildAccountsModel();
     emit backendsChanged();
     updateLockOverlayVisibility();
@@ -651,20 +665,19 @@ void AccountController::sendMessage(const QString &conversationId, const QString
     }
 }
 
-/// \brief Add a new account at runtime (dialog or IPC). The backend is
-///        created through BackendRegistry and persisted into the
-///        encrypted vault DB. Success is claimed only after IO
-///        verifies (see the ioStarted lambda in connectBackend).
+/// \brief Add a new account at runtime (panel or IPC).
+///
+/// PROVISIONAL: the account is NOT registered, shown in the rail, or
+/// persisted until the backend proves the credentials work. The proof
+/// is ioStarted(true) for every backend (IMAP verifies with LIST
+/// there; Proton logs in first; Delta Chat after its QR chain). A
+/// failed attempt leaves no pill and no vault row — the backend is
+/// discarded and the panel shows the backend's real error text.
 void AccountController::addAccount(const QVariantMap &credentials)
 {
     const QString type = credentials.value(QStringLiteral("type"),
                                            QStringLiteral("imap")).toString();
-
-    const QString user = credentials.value(QStringLiteral("user")).toString();
-    const QString host = credentials.value(QStringLiteral("host")).toString();
-    const QString accountId = (!user.isEmpty() && !host.isEmpty())
-                            ? user + QLatin1Char('@') + host + QLatin1Char('#') + type
-                            : type;
+    const QString accountId = computeAccountId(type, credentials);
 
     if (accountById(accountId)) {
         setConfigStatus(QStringLiteral("Account already added: ") + accountId);
@@ -681,23 +694,89 @@ void AccountController::addAccount(const QVariantMap &credentials)
         emit errorOccurred(QStringLiteral("Unsupported account type: ") + type);
         return;
     }
-
-    registerAccount(type, credentials, backend);
-
-    // Persist into the encrypted vault DB.
-    if (m_vault && !m_vault->isLocked()) {
-        AccountStore store(accountsDbPath(), m_vault->key());
-        QString err;
-        if (!store.open(&err) || !store.add(credentials, &err))
-            emit errorOccurred(QStringLiteral("Persist account failed: ") + err);
-    }
-
-    backend->startIo();
+    // Owned by the controller even during the attempt (leak-safe on
+    // failure paths before deleteLater gets to run).
+    backend->setParent(this);
 
     m_pendingAdds.insert(accountId);
+    emit accountAddInProgressChanged();
     setConfigStatus(QStringLiteral("Adding account ") + accountId
                     + QStringLiteral("…"));
-    ensureActiveAccount();
+
+    auto lastError = std::make_shared<QString>();
+    auto *attemptTimer = new QTimer(this);
+    attemptTimer->setSingleShot(true);
+    attemptTimer->setInterval(90'000);
+
+    auto failAttempt = [this, backend, accountId, lastError,
+                        attemptTimer](const QString &why) {
+        if (accountById(accountId) || !m_pendingAdds.contains(accountId))
+            return;  // already resolved
+        attemptTimer->stop();
+        m_pendingAdds.remove(accountId);
+        emit accountAddInProgressChanged();
+        QString reason = !lastError->isEmpty() ? *lastError : why;
+        if (reason.isEmpty())
+            reason = QStringLiteral("the server rejected the account");
+        setConfigStatus(QStringLiteral("Adding failed: ") + reason);
+        backend->deleteLater();
+    };
+
+    // Provisional wiring — resolves the attempt only. Once the account
+    // is registered these handlers go silent (the full wiring lives in
+    // connectBackend).
+    connect(backend, &BackendPlugin::setupProgress, this,
+            [this, accountId](const QString &stage) {
+                if (!accountById(accountId) && m_pendingAdds.contains(accountId))
+                    setConfigStatus(stage);
+            });
+    connect(backend, &BackendPlugin::errorOccurred, this,
+            [lastError](const QString &error) { *lastError = error; });
+    connect(backend, &BackendPlugin::configured, this,
+            [failAttempt](bool ok) mutable {
+                if (!ok)
+                    failAttempt(QString());
+            });
+    connect(backend, &BackendPlugin::ioStarted, this,
+            [this, type, credentials, backend, accountId, attemptTimer, failAttempt]
+            (bool ok, const QString &error) mutable {
+                if (accountById(accountId) || !m_pendingAdds.contains(accountId))
+                    return;
+                if (!ok) {
+                    failAttempt(error);
+                    return;
+                }
+
+                // Success — NOW wire the account through the system.
+                attemptTimer->stop();
+                registerAccount(type, credentials, backend,
+                                /*driveConfigure=*/false);
+
+                if (m_vault && !m_vault->isLocked()) {
+                    AccountStore store(accountsDbPath(), m_vault->key());
+                    QString err;
+                    if (!store.open(&err) || !store.add(credentials, &err))
+                        emit errorOccurred(QStringLiteral("Persist account failed: ") + err);
+                }
+
+                m_pendingAdds.remove(accountId);
+                emit accountAddInProgressChanged();
+                setConfigStatus(QStringLiteral("Account added: ") + accountId);
+
+                if (auto *p = dynamic_cast<IConversationProvider *>(backend))
+                    p->fetchConversations();
+                ensureActiveAccount();
+            });
+    connect(attemptTimer, &QTimer::timeout, this,
+            [failAttempt]() mutable { failAttempt(QStringLiteral("timed out")); });
+    attemptTimer->start();
+
+    // Kick the attempt: configure when the backend has the capability,
+    // then start IO. (Delta Chat self-configures from its credentials
+    // during initialize; Mock emits immediately.)
+    if (auto *c = dynamic_cast<ICredentialsSetup *>(backend))
+        c->configure(credentials);
+    backend->startIo();
 }
 
 /// \brief Remove an account: stop IO, unregister, drop the persisted

@@ -86,10 +86,11 @@ void ProtonBackend::startIo()
     // The SDK's event loop runs on its own runtime from context
     // creation; nothing to kick. ioStarted reports SESSION readiness —
     // emit it only once configure() has actually logged us in (the
-    // controller's pending-add bookkeeping depends on the ordering:
-    // "adding…" must not resolve to success before auth completes).
+    // controller's provisional add flow gates on this ordering).
     if (m_configured)
         emit ioStarted(true, QString());
+    else
+        m_ioRequested = true;  // configure() will emit when ready
 }
 
 void ProtonBackend::stopIo()
@@ -127,17 +128,20 @@ void ProtonBackend::configure(const QVariantMap &credentials)
 
     // Restore a persisted session first (no password needed); only when
     // there is none do we burn a fresh login.
+    emit setupProgress(QStringLiteral("Restoring saved session…"));
     call(QStringLiteral("restore_session"))
         .then([this, user, pass, totp](QJsonValue r) -> QFuture<QJsonValue> {
             if (r.toObject().value(QStringLiteral("state")).toString() == QLatin1String("ok"))
                 return QtFuture::makeReadyValueFuture(r);
 
+            emit setupProgress(QStringLiteral("Signing in to Proton…"));
             return call(QStringLiteral("login"),
                         {{QStringLiteral("user"), user}, {QStringLiteral("password"), pass}})
                 .then([this, totp](QJsonValue lr) -> QFuture<QJsonValue> {
                     const QString state =
                         lr.toObject().value(QStringLiteral("state")).toString();
                     if (state == QLatin1String("totp") && !totp.isEmpty()) {
+                        emit setupProgress(QStringLiteral("Checking the 2FA code…"));
                         return call(QStringLiteral("submit_totp"),
                                     {{QStringLiteral("code"), totp}});
                     }
@@ -151,8 +155,12 @@ void ProtonBackend::configure(const QVariantMap &credentials)
                 r.toObject().value(QStringLiteral("state")).toString();
             if (state == QLatin1String("ok")) {
                 m_configured = true;
+                emit setupProgress(QStringLiteral("Signed in — syncing folders…"));
                 emit configured(true);
-                emit ioStarted(true, QString());
+                if (m_ioRequested) {
+                    m_ioRequested = false;
+                    emit ioStarted(true, QString());
+                }
                 fetchConversations();
             } else if (state == QLatin1String("totp")) {
                 emit errorOccurred(QStringLiteral(
@@ -196,6 +204,7 @@ void ProtonBackend::fetchConversations()
             // leaving the account empty until restart.
             if (convs.isEmpty() && m_configured && m_labelRetries < 5) {
                 ++m_labelRetries;
+                emit setupProgress(QStringLiteral("Syncing folders…"));
                 QTimer::singleShot(2000, this, [this] { fetchConversations(); });
             } else if (!convs.isEmpty()) {
                 m_labelRetries = 0;

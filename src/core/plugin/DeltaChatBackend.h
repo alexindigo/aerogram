@@ -155,13 +155,16 @@ public:
     void setupFromQr(const QString &qrContent) override
     {
         qWarning().noquote() << "DeltaChat: setupFromQr start";
+        emit setupProgress(QStringLiteral("Applying the invite…"));
         call(QStringLiteral("set_config_from_qr"), {m_accountId, qrContent})
             .then([this](QJsonValue) {
                 qWarning().noquote() << "DeltaChat: qr applied, configuring...";
+                emit setupProgress(QStringLiteral("Configuring the account…"));
                 return call(QStringLiteral("configure"), {m_accountId});
             }).unwrap()
             .then([this](QJsonValue) {
                 qWarning().noquote() << "DeltaChat: configured, starting io";
+                emit setupProgress(QStringLiteral("Starting synchronization…"));
                 return call(QStringLiteral("start_io"), {m_accountId});
             }).unwrap()
             .then([this](QJsonValue) {

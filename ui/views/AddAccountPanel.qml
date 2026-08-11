@@ -138,6 +138,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: availableWidth
+            enabled: !accountController.accountAddInProgress
 
             ColumnLayout {
                 width: parent.width
@@ -212,9 +213,17 @@ Item {
 
             Item { Layout.fillWidth: true }
 
+            // While a connection attempt is in flight: spinner replaces
+            // the submit button; the status message narrates the stage.
+            BusyIndicator {
+                visible: accountController.accountAddInProgress
+                running: visible
+            }
+
             Button {
                 text: "Add account"
                 visible: root.selectedBackend >= 0
+                         && !accountController.accountAddInProgress
                 enabled: root.requiredFilled()
                 onClicked: root.submit()
             }
