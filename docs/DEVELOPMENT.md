@@ -1,11 +1,25 @@
 # Development
 
+## Prerequisites
+
+- Qt6 (Core, Quick, QuickControls2, Concurrent), KF6 Kirigami
+- libcurl, SQLCipher, libsodium
+- For the Proton backend (`proton-core/`): Rust toolchain (rustup),
+  `clang` (bindgen needs libclang), and Go (gopenpgp-sys compiles its
+  crypto archive). CMake disables the Proton backend with a warning if
+  cargo is missing.
+
 ## Build
 
 ```bash
 cmake -B build -S .
 cmake --build build
 ```
+
+The first build compiles the Rust Proton core via cargo (several
+minutes; pinned git dependencies — see `proton-core/Cargo.toml` and
+`.cargo/config.toml`). The Proton backend is registered automatically
+when the staticlib is available.
 
 ## Run
 

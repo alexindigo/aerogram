@@ -153,10 +153,15 @@ failure mode Pattern 2 prevents.
 
 ### Panel independence
 
-Panels are independent components. The controller decides which panels
-show (via `activePanels`); `main.qml` instantiates them via `Loader`s
-keyed on that state. No panel references another — a panel may be its
-own window later without changing its code. Composition containers that
+Panels are independent components. The controller owns a **layout
+model** (`panelLayout`): a list of `{id, type, x, y, width, height,
+visible}` entries where type is `panel` or `separator`. `main.qml` is
+a Repeater of absolutely-positioned Loaders bound to that model — the
+window pushes its size via `setWindowSize` and the controller
+recomputes geometry. No panel references another — a panel may be its
+own window later without changing its code. Responsive layout (e.g.
+narrow windows stack conversations above messages 35/65) is a
+controller branch on window size, not QML. Composition containers that
 assume co-location (a StackLayout of fixed pages, a view nesting
 another view) are forbidden: they presume what the controller owns.
 

@@ -176,7 +176,7 @@ Item {
                                     onTextChanged: {
                                         const v = root.values
                                         v[fieldLoader.modelData.key] = text
-                                        root.values = v
+                                        root.values = Object.assign({}, v)
                                     }
                                 }
                             }
@@ -190,7 +190,7 @@ Item {
                                 onCheckedChanged: {
                                     const v = root.values
                                     v[fieldLoader.modelData.key] = checked
-                                    root.values = v
+                                    root.values = Object.assign({}, v)
                                 }
                             }
                         }
