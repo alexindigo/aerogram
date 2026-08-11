@@ -461,6 +461,27 @@ planned.
   Backends use `QtConcurrent` workers and deliver results via queued
   signal emission.
 
+### Push events
+
+Backends with a live change channel (Delta Chat's event batch
+long-poll, the Proton SDK's local-store watchers) emit the **push
+signal family** on the base:
+
+- `messageArrived(conversationId, message)` — payload; the controller
+  appends to the open conversation (dedup by id) and models grow
+  targeted row mutations instead of resets.
+- `conversationUpserted(conversation)` — payload; sidebar badges and
+  previews update in place.
+- `messageRemoved(conversationId, messageId)` — tombstone.
+- `storageChanged()` — coarse fallback for bursts/ambiguous changes;
+  the controller debounces (300ms per account) into a targeted refetch.
+
+Payload-carrying signals are preferred where the backend knows the
+data cheaply; `storageChanged` is always correct. Poll-based backends
+(IMAP) may instead implement the `ISyncable` capability, which the
+controller pokes on account activation. Push events ride the same
+unidirectional flow as everything else — no QML changes.
+
 ---
 
 ## Non-Goals

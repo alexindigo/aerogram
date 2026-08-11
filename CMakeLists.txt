@@ -5,7 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2 Concurrent)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Quick QuickControls2 Concurrent Multimedia)
+find_package(ZXing REQUIRED)
 find_package(KF6Kirigami REQUIRED)
 find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -39,6 +40,7 @@ qt_add_executable(aerogram
     src/core/ipc/IpcServer.h
     src/core/proton/ProtonBackend.h
     src/core/proton/ProtonBackend.cpp
+    src/ui/QrCodeHelper.h
 )
 
 # --- Proton core (Rust staticlib) -------------------------------------
@@ -87,6 +89,7 @@ qt_add_qml_module(aerogram
         ui/views/SettingsView.qml
         ui/views/AddAccountPanel.qml
         ui/components/Sidebar.qml
+        ui/components/QrScannerDialog.qml
         ui/components/LockOverlay.qml
         ui/components/AeroIcon.qml
         ui/components/IdentityBlock.qml
@@ -127,8 +130,10 @@ target_link_libraries(aerogram PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Concurrent
+    Qt6::Multimedia
     KF6::Kirigami
     CURL::libcurl
+    ZXing::ZXing
     ${SQLCIPHER_LIBRARIES}
     ${SODIUM_LIBRARIES}
 )

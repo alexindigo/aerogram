@@ -8,6 +8,7 @@
 #include <QJsonObject>
 
 #include "core/Types.h"
+#include "ui/QrCodeHelper.h"
 #include "core/crypto/MasterKeyManager.h"
 #include "core/plugin/BackendRegistry.h"
 #include "core/plugin/Capabilities.h"
@@ -128,7 +129,7 @@ int main(int argc, char *argv[])
             QStringLiteral("Chat over email. Paste a dcaccount: invite "
                            "or a scanned QR code's text."),
             {
-                {QStringLiteral("qr"), QStringLiteral("Invite / QR text"), QStringLiteral("dcaccount:https://…"), QStringLiteral("text"), true},
+                {QStringLiteral("qr"), QStringLiteral("Invite / QR text"), QStringLiteral("dcaccount:https://…"), QStringLiteral("qr"), true},
             },
         });
 
@@ -221,6 +222,9 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("accountController", &controller);
+    // QR decode helper (ZXing) — schema-driven "qr" fields use it for
+    // camera/image scanning.
+    engine.rootContext()->setContextProperty("qrCodeHelper", new QrCodeHelper(&engine));
 
     const QUrl url(QStringLiteral("qrc:/Aerogram/ui/main.qml"));
     engine.load(url);

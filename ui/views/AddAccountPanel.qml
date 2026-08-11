@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import "../components"
 
 // Add-account panel: pick a backend from the registry-advertised list,
 // then fill the credential fields that backend declares. The panel is
@@ -153,8 +154,9 @@ Item {
                         id: fieldLoader
                         required property var modelData
                         Layout.fillWidth: true
-                        sourceComponent: modelData.kind === "bool"
-                                         ? boolField : textField
+                        sourceComponent: modelData.kind === "bool" ? boolField
+                                       : modelData.kind === "qr" ? qrField
+                                       : textField
 
                         Component {
                             id: textField
@@ -178,6 +180,53 @@ Item {
                                         const v = root.values
                                         v[fieldLoader.modelData.key] = text
                                         root.values = Object.assign({}, v)
+                                    }
+                                }
+                            }
+                        }
+
+                        // "qr" kind: text field that can also be filled
+                        // by scanning (camera or image file).
+                        Component {
+                            id: qrField
+                            ColumnLayout {
+                                spacing: 4
+                                Label {
+                                    text: fieldLoader.modelData.label
+                                          + (fieldLoader.modelData.required ? " *" : " (optional)")
+                                    font.pixelSize: 12
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    TextField {
+                                        id: qrTextField
+                                        Layout.fillWidth: true
+                                        placeholderText: fieldLoader.modelData.placeholder
+                                        text: root.values[fieldLoader.modelData.key] !== undefined
+                                              ? String(root.values[fieldLoader.modelData.key]) : ""
+                                        onTextChanged: {
+                                            const v = root.values
+                                            v[fieldLoader.modelData.key] = text
+                                            root.values = v
+                                        }
+                                    }
+
+                                    Button {
+                                        text: "Scan…"
+                                        icon.name: "view-barcode"
+                                        onClicked: qrScanner.open()
+                                    }
+                                }
+
+                                QrScannerDialog {
+                                    id: qrScanner
+                                    onDecoded: (text) => {
+                                        const v = root.values
+                                        v[fieldLoader.modelData.key] = text
+                                        root.values = v
+                                        qrTextField.text = text
                                     }
                                 }
                             }
