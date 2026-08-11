@@ -70,12 +70,13 @@ impl FileKeyChain {
     }
 
     fn path(&self, kind: KeyChainEntryKind) -> PathBuf {
-        // No Debug on the enum — map explicitly.
+        // No Debug on the enum — map explicitly. (Exhaustive on the
+        // pinned dep; a new upstream variant will fail the build loudly
+        // here rather than silently share a file.)
         let name = match kind {
             KeyChainEntryKind::EncryptionKey => "encryption",
             KeyChainEntryKind::DeviceKey => "device",
             KeyChainEntryKind::PinHash => "pin_hash",
-            _ => "other",
         };
         self.dir.join(format!("{name}.key"))
     }
