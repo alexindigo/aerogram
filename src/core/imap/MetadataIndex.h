@@ -79,7 +79,7 @@ public:
                 || !exec("PRAGMA synchronous=NORMAL;", err))
             return false;
 
-        return exec("CREATE TABLE IF NOT EXISTS conversations ("
+        if (!exec("CREATE TABLE IF NOT EXISTS conversations ("
                     "  id TEXT PRIMARY KEY,"
                     "  kind TEXT NOT NULL,"
                     "  name TEXT NOT NULL,"
@@ -87,7 +87,7 @@ public:
                     "  unread_count INTEGER DEFAULT 0,"
                     "  last_activity INTEGER DEFAULT 0"
                     ");", err)
-            && exec("CREATE TABLE IF NOT EXISTS messages ("
+            || !exec("CREATE TABLE IF NOT EXISTS messages ("
                     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     "  message_id TEXT UNIQUE,"
                     "  conversation_id TEXT NOT NULL,"
@@ -98,17 +98,46 @@ public:
                     "  is_unread INTEGER DEFAULT 1,"
                     "  file_path TEXT DEFAULT ''"
                     ");", err)
-            && exec("CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5("
+            || !exec("CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5("
                     "  subject, sender, body_plaintext"
                     ");", err)
-            && exec("CREATE TABLE IF NOT EXISTS attachments ("
+            || !exec("CREATE TABLE IF NOT EXISTS attachments ("
                     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     "  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,"
                     "  part_index INTEGER NOT NULL,"
                     "  filename TEXT DEFAULT '',"
                     "  mime_type TEXT DEFAULT '',"
                     "  size INTEGER DEFAULT 0"
-                    ");", err);
+                    ");", err))
+            return false;
+
+        // Schema v2: a message is identity+content, stored ONCE in
+        // `messages`; which conversations (IMAP folders, Proton/Gmail
+        // labels) it appears in is membership in `message_labels`.
+        // messages.conversation_id stays as the first-seen label hint.
+        qint64 version = 0;
+        {
+            sqlite3_stmt *v = nullptr;
+            if (sqlite3_prepare_v2(m_db, "PRAGMA user_version;", -1, &v, nullptr) == SQLITE_OK
+                    && sqlite3_step(v) == SQLITE_ROW)
+                version = sqlite3_column_int64(v, 0);
+            sqlite3_finalize(v);
+        }
+        if (version < 2) {
+            if (!exec("CREATE TABLE IF NOT EXISTS message_labels ("
+                        "  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,"
+                        "  label TEXT NOT NULL,"
+                        "  UNIQUE(message_id, label)"
+                        ");", err))
+                return false;
+            // Backfill: every pre-v2 message belongs to its folder.
+            if (!exec("INSERT OR IGNORE INTO message_labels (message_id, label)"
+                      " SELECT id, conversation_id FROM messages;", err))
+                return false;
+            if (!exec("PRAGMA user_version = 2;", err))
+                return false;
+        }
+        return true;
     }
 
     void upsertConversation(const Conversation &c)
@@ -162,6 +191,10 @@ public:
         sqlite3_prepare_v2(m_db,
             "INSERT INTO attachments (message_id, part_index, filename, mime_type, size)"
             " VALUES (?, ?, ?, ?, ?);", -1, &att, nullptr);
+        sqlite3_stmt *mem = nullptr;
+        sqlite3_prepare_v2(m_db,
+            "INSERT OR IGNORE INTO message_labels (message_id, label)"
+            " VALUES (?, ?);", -1, &mem, nullptr);
 
         for (int i = 0; i < msgs.size(); ++i) {
             const Message &m = msgs.at(i);
@@ -180,38 +213,52 @@ public:
                 sqlite3_reset(ins);
                 continue;
             }
+            // Capture BEFORE the membership insert, which would
+            // overwrite the change count.
+            const bool wasNew = sqlite3_changes(m_db) > 0;
 
-            if (sqlite3_changes(m_db) > 0) {
-                bindText(sel, 1, m.messageId);
-                if (sqlite3_step(sel) == SQLITE_ROW) {
-                    const sqlite3_int64 dbId = sqlite3_column_int64(sel, 0);
+            // The message row id is needed for membership whether or not
+            // the row was just inserted (a message can gain a new label
+            // long after its content landed).
+            bindText(sel, 1, m.messageId);
+            sqlite3_int64 dbId = -1;
+            if (sqlite3_step(sel) == SQLITE_ROW)
+                dbId = sqlite3_column_int64(sel, 0);
+            sqlite3_reset(sel);
 
-                    sqlite3_bind_int64(fts, 1, dbId);
-                    bindText(fts, 2, m.subject);
-                    bindText(fts, 3, m.sender);
-                    bindText(fts, 4, bodies.value(i));
-                    if (sqlite3_step(fts) != SQLITE_DONE)
-                        qWarning() << "MetadataIndex: FTS insert failed:"
-                                   << sqlite3_errmsg(m_db);
-                    sqlite3_reset(fts);
-
-                    const QVector<AttachmentMeta> meta = attachments.value(i);
-                    for (const AttachmentMeta &a : meta) {
-                        sqlite3_bind_int64(att, 1, dbId);
-                        sqlite3_bind_int(att, 2, a.index);
-                        bindText(att, 3, a.filename);
-                        bindText(att, 4, a.mimeType);
-                        sqlite3_bind_int64(att, 5, a.size);
-                        if (sqlite3_step(att) != SQLITE_DONE)
-                            qWarning() << "MetadataIndex: attachment insert failed:"
-                                       << sqlite3_errmsg(m_db);
-                        sqlite3_reset(att);
-                    }
-                } else {
-                    qWarning() << "MetadataIndex: id lookup failed for" << m.messageId
+            if (dbId >= 0) {
+                sqlite3_bind_int64(mem, 1, dbId);
+                bindText(mem, 2, m.conversationId);
+                if (sqlite3_step(mem) != SQLITE_DONE)
+                    qWarning() << "MetadataIndex: membership insert failed:"
                                << sqlite3_errmsg(m_db);
+                sqlite3_reset(mem);
+            }
+
+            // FTS + attachments land only on first insert (content is
+            // immutable per message).
+            if (wasNew && dbId >= 0) {
+                sqlite3_bind_int64(fts, 1, dbId);
+                bindText(fts, 2, m.subject);
+                bindText(fts, 3, m.sender);
+                bindText(fts, 4, bodies.value(i));
+                if (sqlite3_step(fts) != SQLITE_DONE)
+                    qWarning() << "MetadataIndex: FTS insert failed:"
+                               << sqlite3_errmsg(m_db);
+                sqlite3_reset(fts);
+
+                const QVector<AttachmentMeta> meta = attachments.value(i);
+                for (const AttachmentMeta &a : meta) {
+                    sqlite3_bind_int64(att, 1, dbId);
+                    sqlite3_bind_int(att, 2, a.index);
+                    bindText(att, 3, a.filename);
+                    bindText(att, 4, a.mimeType);
+                    sqlite3_bind_int64(att, 5, a.size);
+                    if (sqlite3_step(att) != SQLITE_DONE)
+                        qWarning() << "MetadataIndex: attachment insert failed:"
+                                   << sqlite3_errmsg(m_db);
+                    sqlite3_reset(att);
                 }
-                sqlite3_reset(sel);
             }
             sqlite3_reset(ins);
         }
@@ -220,6 +267,7 @@ public:
         sqlite3_finalize(sel);
         sqlite3_finalize(fts);
         sqlite3_finalize(att);
+        sqlite3_finalize(mem);
 
         exec("COMMIT;");
     }
@@ -252,8 +300,10 @@ public:
         QVector<Message> out;
         sqlite3_stmt *q = nullptr;
         if (sqlite3_prepare_v2(m_db,
-                "SELECT id, message_id, conversation_id, sender, subject, date, snippet, is_unread"
-                " FROM messages WHERE conversation_id = ? ORDER BY date DESC;",
+                "SELECT m.id, m.message_id, m.conversation_id, m.sender, m.subject, m.date, m.snippet, m.is_unread"
+                " FROM messages m"
+                " JOIN message_labels ml ON ml.message_id = m.id"
+                " WHERE ml.label = ? ORDER BY m.date DESC;",
                 -1, &q, nullptr) != SQLITE_OK)
             return out;
         bindText(q, 1, conversationId);
@@ -306,53 +356,84 @@ public:
         return out;
     }
 
-    /// \brief Reconcile a conversation against the server's truth:
-    ///        delete local rows whose message_id is absent from
-    ///        presentIds, including their FTS and attachment rows
-    ///        (foreign_keys is NOT on — no cascade). Returns the removed
-    ///        rows' store paths so the caller can delete the shards.
+    /// \brief Reconcile a conversation (folder/label) against the
+    ///        server's truth. Membership-scoped: messages absent from
+    ///        presentIds lose their membership in THIS conversation;
+    ///        the message row (and its shard) is deleted only when no
+    ///        labels hold it anymore (multi-label messages survive).
+    ///        Returns the fully-orphaned messages' store paths.
     ///
     ///        ONLY call with a COMPLETE present-set for the
-    ///        conversation — a partial listing would wipe real mail.
+    ///        conversation — a partial listing would drop memberships
+    ///        for mail we merely failed to list this pass.
     QVector<QString> removeMissingFromConversation(const QString &conversationId,
                                                    const QSet<QString> &presentIds)
     {
-        QVector<QPair<sqlite3_int64, QString>> doomed;
+        // Messages with membership in this conversation that are absent
+        // from the present set.
+        QVector<QPair<sqlite3_int64, QString>> stale;  // (dbId, storePath)
         {
             sqlite3_stmt *st = nullptr;
             if (sqlite3_prepare_v2(m_db,
-                    "SELECT id, message_id, file_path FROM messages"
-                    " WHERE conversation_id = ?;", -1, &st, nullptr) != SQLITE_OK)
+                    "SELECT m.id, m.message_id, m.file_path FROM messages m"
+                    " JOIN message_labels ml ON ml.message_id = m.id"
+                    " WHERE ml.label = ?;", -1, &st, nullptr) != SQLITE_OK)
                 return {};
             bindText(st, 1, conversationId);
             while (sqlite3_step(st) == SQLITE_ROW) {
                 const QString mid = columnText(st, 1);
                 if (!presentIds.contains(mid))
-                    doomed.append({sqlite3_column_int64(st, 0), columnText(st, 2)});
+                    stale.append({sqlite3_column_int64(st, 0), columnText(st, 2)});
             }
             sqlite3_finalize(st);
         }
-        if (doomed.isEmpty())
+        if (stale.isEmpty())
             return {};
 
         QVector<QString> removedPaths;
         exec("BEGIN TRANSACTION;");
+        sqlite3_stmt *delMem = nullptr;
+        sqlite3_stmt *cntMem = nullptr;
         sqlite3_stmt *delMsg = nullptr;
         sqlite3_stmt *delFts = nullptr;
         sqlite3_stmt *delAtt = nullptr;
+        sqlite3_prepare_v2(m_db,
+            "DELETE FROM message_labels WHERE message_id = ? AND label = ?;",
+            -1, &delMem, nullptr);
+        sqlite3_prepare_v2(m_db,
+            "SELECT COUNT(*) FROM message_labels WHERE message_id = ?;",
+            -1, &cntMem, nullptr);
         sqlite3_prepare_v2(m_db, "DELETE FROM messages WHERE id = ?;", -1, &delMsg, nullptr);
         sqlite3_prepare_v2(m_db, "DELETE FROM messages_fts WHERE rowid = ?;", -1, &delFts, nullptr);
         sqlite3_prepare_v2(m_db, "DELETE FROM attachments WHERE message_id = ?;", -1, &delAtt, nullptr);
-        for (const auto &row : doomed) {
-            sqlite3_bind_int64(delMsg, 1, row.first);
-            sqlite3_step(delMsg); sqlite3_reset(delMsg);
-            sqlite3_bind_int64(delFts, 1, row.first);
-            sqlite3_step(delFts); sqlite3_reset(delFts);
-            sqlite3_bind_int64(delAtt, 1, row.first);
-            sqlite3_step(delAtt); sqlite3_reset(delAtt);
-            if (!row.second.isEmpty())
-                removedPaths.append(row.second);
+
+        for (const auto &row : stale) {
+            const sqlite3_int64 dbId = row.first;
+            // Drop this conversation's membership.
+            sqlite3_bind_int64(delMem, 1, dbId);
+            bindText(delMem, 2, conversationId);
+            sqlite3_step(delMem); sqlite3_reset(delMem);
+
+            // Orphaned (no labels left)? Then the message itself goes.
+            sqlite3_bind_int64(cntMem, 1, dbId);
+            qint64 remaining = -1;
+            if (sqlite3_step(cntMem) == SQLITE_ROW)
+                remaining = sqlite3_column_int64(cntMem, 0);
+            sqlite3_reset(cntMem);
+
+            if (remaining == 0) {
+                sqlite3_bind_int64(delMsg, 1, dbId);
+                sqlite3_step(delMsg); sqlite3_reset(delMsg);
+                sqlite3_bind_int64(delFts, 1, dbId);
+                sqlite3_step(delFts); sqlite3_reset(delFts);
+                sqlite3_bind_int64(delAtt, 1, dbId);
+                sqlite3_step(delAtt); sqlite3_reset(delAtt);
+                if (!row.second.isEmpty())
+                    removedPaths.append(row.second);
+            }
         }
+        sqlite3_finalize(delMem);
+        sqlite3_finalize(cntMem);
         sqlite3_finalize(delMsg);
         sqlite3_finalize(delFts);
         sqlite3_finalize(delAtt);
