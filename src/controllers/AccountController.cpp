@@ -848,6 +848,9 @@ void AccountController::removeAccount(const QString &accountId)
 
     account.backend->stopIo();
     account.backend->shutdown();
+    // Delete the account's on-disk data (cached mail, indexes, session
+    // stores) — removal means removal, including the cache.
+    account.backend->purgeLocalData();
     // No ghost signals from the removed backend, and no leak: drop our
     // connect()s, then schedule deletion on the event loop.
     disconnect(account.backend, nullptr, this, nullptr);

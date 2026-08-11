@@ -44,6 +44,7 @@ public:
     void shutdown() override;
     void startIo() override;
     void stopIo() override;
+    void purgeLocalData() override;
 
     // ICredentialsSetup
     void configure(const QVariantMap &credentials) override;

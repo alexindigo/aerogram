@@ -75,6 +75,15 @@ public:
     /// configure/restore — the identity the controller registers.
     QString accountLabel() const override { return m_addr; }
 
+    /// Account removal: delete the per-account rpc store (chats,
+    /// messages, keys). The server process is already dead at this
+    /// point (shutdown() runs first in removeAccount).
+    void purgeLocalData() override
+    {
+        if (!m_accountsPath.isEmpty())
+            QDir(m_accountsPath).removeRecursively();
+    }
+
     // -----------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------
@@ -87,6 +96,7 @@ public:
                          + QDir::separator() + "delta";
         }
         QDir().mkpath(accountsPath);
+        m_accountsPath = accountsPath;
         m_pendingQr = params.value(QStringLiteral("qr")).toString();
 
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -567,6 +577,7 @@ private:
     int m_nextId = 1;
     QString m_pendingQr;
     QString m_addr;
+    QString m_accountsPath;
     bool m_ioRequested = false;  // startIo arrived before the id existed
     QHash<int, std::shared_ptr<QPromise<QJsonValue>>> m_pending;
     QByteArray m_buffer;

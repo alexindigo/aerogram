@@ -131,6 +131,17 @@ public:
         }
     }
 
+    /// Account removal: delete the whole per-account store (encrypted
+    /// shards + index.db), no recreate.
+    void purgeLocalData() override
+    {
+        m_pollTimer->stop();
+        if (!m_storageRoot.isEmpty()) {
+            const QString accountDir = QFileInfo(m_storageRoot).absolutePath();
+            QDir(accountDir).removeRecursively();
+        }
+    }
+
     // -----------------------------------------------------------------
     // IO control
     // -----------------------------------------------------------------

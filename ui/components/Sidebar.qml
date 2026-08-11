@@ -86,8 +86,9 @@ Rectangle {
                     Kirigami.PromptDialog {
                         id: removeConfirm
                         title: "Remove account"
-                        subtitle: "Remove " + model.accountId + " and its "
-                                  + "stored credentials? Local cached mail is kept."
+                        subtitle: "Remove " + model.accountId + "? Its stored "
+                                  + "credentials and locally cached mail will "
+                                  + "be deleted."
                         standardButtons: Kirigami.Dialog.Ok | Kirigami.Dialog.Cancel
                         onAccepted: sidebar.accountRemoveRequested(model.accountId)
                     }

@@ -81,6 +81,14 @@ void ProtonBackend::shutdown()
     }
 }
 
+void ProtonBackend::purgeLocalData()
+{
+    // After shutdown() (the core must be freed first — it holds the
+    // session DBs open).
+    if (!m_dataDir.isEmpty())
+        QDir(m_dataDir).removeRecursively();
+}
+
 void ProtonBackend::startIo()
 {
     // The SDK's event loop runs on its own runtime from context

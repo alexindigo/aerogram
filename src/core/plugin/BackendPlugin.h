@@ -34,6 +34,12 @@ public:
     virtual void startIo() = 0;
     virtual void stopIo() = 0;
 
+    /// \brief Delete the backend's on-disk data for this account
+    ///        (cached mail, indexes, session stores). Called by the
+    ///        controller on account REMOVAL, after shutdown(). Default
+    ///        no-op for backends with no local store (mock).
+    virtual void purgeLocalData() {}
+
     /// \brief The account's backend-reported identity (the real
     ///        address once the backend knows it — Delta Chat learns it
     ///        only after configure; Proton echoes the login). Empty
