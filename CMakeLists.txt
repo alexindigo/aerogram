@@ -34,7 +34,6 @@ qt_add_executable(aerogram
     src/core/plugin/MockBackend.h
     src/core/plugin/DeltaChatBackend.h
     src/core/imap/CurlTransport.h
-    src/core/imap/MimeParser.h
     src/core/store/MessageStore.h
     src/core/store/MetadataIndex.h
     src/core/imap/ImapBackend.h

@@ -2,12 +2,14 @@
 
 ## Prerequisites
 
-- Qt6 (Core, Quick, QuickControls2, Concurrent), KF6 Kirigami
+- Qt6 (Core, Quick, QuickControls2, Concurrent, Multimedia), KF6 Kirigami,
+  KF6 Mime (`kmime`), ZXing-C++ (`zxing-cpp`)
 - libcurl, SQLCipher, libsodium
-- For the Proton backend (`proton-core/`): Rust toolchain (rustup),
-  `clang` (bindgen needs libclang), and Go (gopenpgp-sys compiles its
-  crypto archive). CMake disables the Proton backend with a warning if
-  cargo is missing.
+- Rust toolchain (rustup) — REQUIRED: the shared email-HTML sanitizer
+  (`html-sanitize-core/`) is a mandatory build dep; the Proton backend
+  (`proton-core/`) also needs `clang` (bindgen/libclang) and Go
+  (gopenpgp-sys compiles its crypto archive). Only the Proton backend is
+  optional (disabled with a warning when cargo is absent).
 
 ## Build
 

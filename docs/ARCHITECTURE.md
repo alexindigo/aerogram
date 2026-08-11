@@ -269,6 +269,37 @@ Remove any one pattern and the others break down:
 
 ---
 
+## Store as Firewall
+
+Content flows one way and never backend→UI:
+
+```
+Backend (sync/push → writes store, emits storageChanged)
+   ⇥  [ Email Store: .eml shards + SQLCipher FTS index ]  ⇥
+Content Pipeline (KMime parse → shared sanitize)  →  Controller (read-through)  →  Panels
+```
+
+### Rules
+
+- **Backends never serve UI content.** Their job is to fill the store
+  (sync loops, push events, on-demand fetches) and emit
+  `storageChanged`. Lists and bodies read from the store, not from a
+  live backend call.
+- **The store holds raw truth.** Sanitization happens at read time
+  (defense in depth — a renderer change never re-exposes stored
+  poison).
+- **One content pipeline** (`src/core/content/`): KMime parses the
+  `.eml`; `HtmlSanitizer` (the shared Rust core) sanitizes HTML for
+  Qt's rich-text subset. No backend-specific parsing or sanitizing.
+- **The store is a shared platform service** (`src/core/store/`), not
+  an IMAP implementation detail. Backends must not call each other —
+  they call the store and the pipeline.
+- **storageChanged means "the store changed; re-read."** Payload push
+  signals (`messageArrived` et al.) are a documented live-thread
+  preview of what was just stored — never a source of truth.
+
+---
+
 ## Pattern A: Async RPC coordination via QFuture
 
 Backends often need to compose multiple asynchronous operations —
