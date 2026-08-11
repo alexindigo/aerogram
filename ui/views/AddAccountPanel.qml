@@ -220,14 +220,20 @@ Item {
             }
         }
 
-        // Result feedback (added / error) — mirrors the old dialog.
-        Label {
+        // Result feedback: an InlineMessage (severity-colored, hard to
+        // miss) instead of faint grey text.
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
             visible: text.length > 0
             text: accountController.configStatus
-            font.pixelSize: 11
-            color: Kirigami.Theme.disabledTextColor
-            wrapMode: Text.Wrap
-            Layout.fillWidth: true
+            type: {
+                const t = accountController.configStatus.toLowerCase()
+                if (t.includes("fail") || t.includes("error"))
+                    return Kirigami.MessageType.Error
+                if (t.includes("added") || t.includes("connected"))
+                    return Kirigami.MessageType.Positive
+                return Kirigami.MessageType.Information
+            }
         }
     }
 }

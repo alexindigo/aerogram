@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QPromise>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QtConcurrent>
 
 #include <exception>
@@ -83,9 +84,12 @@ void ProtonBackend::shutdown()
 void ProtonBackend::startIo()
 {
     // The SDK's event loop runs on its own runtime from context
-    // creation; nothing to kick. Report readiness so the controller
-    // settles its pending-add bookkeeping.
-    emit ioStarted(true, QString());
+    // creation; nothing to kick. ioStarted reports SESSION readiness —
+    // emit it only once configure() has actually logged us in (the
+    // controller's pending-add bookkeeping depends on the ordering:
+    // "adding…" must not resolve to success before auth completes).
+    if (m_configured)
+        emit ioStarted(true, QString());
 }
 
 void ProtonBackend::stopIo()
@@ -146,7 +150,9 @@ void ProtonBackend::configure(const QVariantMap &credentials)
             const QString state =
                 r.toObject().value(QStringLiteral("state")).toString();
             if (state == QLatin1String("ok")) {
+                m_configured = true;
                 emit configured(true);
+                emit ioStarted(true, QString());
                 fetchConversations();
             } else if (state == QLatin1String("totp")) {
                 emit errorOccurred(QStringLiteral(
@@ -184,6 +190,16 @@ void ProtonBackend::fetchConversations()
                 convs.append(c);
             }
             emit conversationsReady(convs);
+
+            // Right after login the SDK's initial sync may not have
+            // written the label rows yet — retry briefly instead of
+            // leaving the account empty until restart.
+            if (convs.isEmpty() && m_configured && m_labelRetries < 5) {
+                ++m_labelRetries;
+                QTimer::singleShot(2000, this, [this] { fetchConversations(); });
+            } else if (!convs.isEmpty()) {
+                m_labelRetries = 0;
+            }
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));

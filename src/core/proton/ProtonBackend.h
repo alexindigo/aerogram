@@ -65,6 +65,8 @@ private:
     QFuture<QJsonValue> call(const QString &method, const QJsonObject &params = {});
 
     ProtonCore *m_core = nullptr;  // owned; freed in shutdown()
+    bool m_configured = false;     // login completed at least once
+    int m_labelRetries = 0;        // post-login label sync patience
     QVariantMap m_credentials;
     QString m_dataDir;
 };

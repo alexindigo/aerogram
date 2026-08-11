@@ -551,6 +551,13 @@ void AccountController::rebuildMergedConversations()
         }
         fetchMessages(pick);
     }
+
+    // Resolve a pending account selection once its conversations land.
+    if (!m_pendingSelectAccount.isEmpty()
+            && m_conversationsByAccount.contains(m_pendingSelectAccount)
+            && !m_conversationsByAccount.value(m_pendingSelectAccount).isEmpty()) {
+        selectDefaultConversation(accountById(m_pendingSelectAccount));
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1019,8 +1026,37 @@ void AccountController::selectAccount(const QString &accountId)
         if (auto *p = dynamic_cast<IConversationProvider *>(account ? account->backend : nullptr))
             p->fetchConversations();
     } else {
-        fetchMessages(accountId + QStringLiteral("/INBOX"));
+        selectDefaultConversation(account);
     }
+}
+
+/// \brief Pick a sensible conversation for an email-family account:
+///        the one named INBOX, else the first. Conversation ids are
+///        backend-local (Proton uses numeric label ids, not the string
+///        "INBOX") — never hardcode names into ids. If the account has
+///        no conversations yet (fresh sync in flight), remember the
+///        pending selection; rebuildMergedConversations() resolves it
+///        when conversations land.
+void AccountController::selectDefaultConversation(Account *account)
+{
+    if (!account)
+        return;
+    const auto &convs = m_conversationsByAccount.value(account->id);
+    if (convs.isEmpty()) {
+        m_pendingSelectAccount = account->id;
+        if (auto *p = dynamic_cast<IConversationProvider *>(account->backend))
+            p->fetchConversations();
+        return;
+    }
+    QString pick = convs.first().id;
+    for (const Conversation &c : convs) {
+        if (c.name.compare(QStringLiteral("INBOX"), Qt::CaseInsensitive) == 0) {
+            pick = c.id;
+            break;
+        }
+    }
+    m_pendingSelectAccount.clear();
+    fetchMessages(pick);
 }
 
 /// \brief Auto-select the first account when nothing is selected.

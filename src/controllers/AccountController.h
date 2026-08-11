@@ -170,6 +170,10 @@ private:
     int m_emptyRefetchCount = 0;
     static constexpr int kMaxEmptyRefetches = 3;
     bool m_autoSelected = false;
+    /// Account selected by the user whose conversations haven't landed
+    /// yet; resolved in rebuildMergedConversations().
+    QString m_pendingSelectAccount;
+    void selectDefaultConversation(Account *account);
 };
 
 #endif
