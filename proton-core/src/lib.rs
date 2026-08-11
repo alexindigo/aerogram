@@ -34,6 +34,7 @@ use proton_core_common::Origin;
 use proton_issue_reporter_service::NoopIssueReporter;
 use proton_log_service::LogService;
 use proton_mail_common::datatypes::LocalMessageId;
+use proton_core_common::models::ModelExtension as _;
 use proton_mail_common::models::Message as MailMessage;
 use proton_mail_common::MailContext;
 
@@ -123,6 +124,10 @@ struct CoreState {
 pub struct ProtonCore {
     ctx: Arc<MailContext>,
     state: Mutex<CoreState>,
+    /// Per-label budget for forced re-sync when a label comes back
+    /// empty right after its first sync (burned-initialized race with
+    /// the SDK's initial event sync). label_id → attempts used.
+    empty_sync_retries: Mutex<std::collections::HashMap<u64, u32>>,
 }
 
 async fn create_context(data_dir: &Path) -> Result<Arc<MailContext>, String> {
@@ -239,6 +244,7 @@ pub unsafe extern "C" fn proton_core_new(data_dir: *const c_char) -> *mut Proton
         Ok(ctx) => Box::into_raw(Box::new(ProtonCore {
             ctx,
             state: Mutex::new(CoreState::default()),
+            empty_sync_retries: Mutex::new(std::collections::HashMap::new()),
         })),
         Err(e) => {
             eprintln!("proton_core_new: {e}");
@@ -526,9 +532,41 @@ async fn list_messages(core: &ProtonCore, params: Value) -> Result<Value, String
             .await
             .map_err(|e| format!("mailbox sync: {e:?}"))?;
 
-        let messages = MailMessage::in_label(local_label, &tether)
+        let mut messages = MailMessage::in_label(local_label, &tether)
             .await
             .map_err(|e| format!("in_label: {e:?}"))?;
+
+        // Burned-initialized guard: a first sync that raced the SDK's
+        // initial event sync marks the label initialized while EMPTY and
+        // it never refills. Detect empty-after-sync and force one direct
+        // page fetch (capped per label per session — genuinely empty
+        // folders must not re-fetch forever).
+        if messages.is_empty() {
+            let mut retries = core.empty_sync_retries.lock().await;
+            let count = retries.entry(label_id).or_insert(0);
+            if *count < 3 {
+                *count += 1;
+                let remote = proton_core_common::models::Label::find_by_id(local_label, &tether)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|l| l.remote_id);
+                if let Some(remote_id) = remote {
+                    eprintln!("proton: label {label_id} empty after sync; forcing page fetch");
+                    MailMessage::sync_first_message_page(
+                        remote_id,
+                        limit.max(50),
+                        ctx.session(),
+                        &mut tether,
+                    )
+                    .await
+                    .map_err(|e| format!("forced page sync: {e:?}"))?;
+                    messages = MailMessage::in_label(local_label, &tether)
+                        .await
+                        .map_err(|e| format!("in_label: {e:?}"))?;
+                }
+            }
+        }
 
         let mut out = Vec::new();
         for m in messages.into_iter().take(limit) {
