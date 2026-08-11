@@ -597,8 +597,29 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         .await
         .map_err(|e| format!("message_body: {e:?}"))?;
 
+    // Qt Quick's StyledText text engine has crashed laying out raw
+    // HTML mail (aerogram's first segfault — QQuickTextPrivate::
+    // updateLayout on a newsletter full of dimensionless <img> tags).
+    // Convert HTML bodies to plain text at the source; raw HTML
+    // rendering is a deliberate future feature (sandboxed view), not
+    // something we let leak into a text widget.
+    let is_html = body.mime_type
+        == proton_mail_common::models::MessageMimeType::TextHtml;
+    let text = if is_html {
+        proton_mail_html_transformer::Transformer::html2text(
+            std::io::Cursor::new(body.body.as_bytes()),
+            proton_mail_html_transformer::Html2TextOptions {
+                decorate_links: true,
+                decorate_images: false,
+            },
+        )
+        .unwrap_or_else(|_| body.body.clone())
+    } else {
+        body.body
+    };
+
     Ok(json!({
-        "text": body.body,
+        "text": text,
         "mime_type": format!("{:?}", body.mime_type),
     }))
 }

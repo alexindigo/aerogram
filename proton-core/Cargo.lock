@@ -39,6 +39,7 @@ dependencies = [
  "proton-issue-reporter-service",
  "proton-log-service",
  "proton-mail-common",
+ "proton-mail-html-transformer",
  "proton-network-monitor-service",
  "secrecy",
  "serde",

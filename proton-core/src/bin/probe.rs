@@ -48,5 +48,27 @@ fn main() {
         }
     }
 
+    // BODY-CHECK: fetch the first message of each non-empty label and
+    // report mime type + whether HTML tags survive (never print content).
+    if let Some(arr) = labels.get("ok").and_then(|v| v.as_array()) {
+        for l in arr {
+            let id = l["id"].as_u64().unwrap();
+            let msgs = call("list_messages", &format!(r#"{{"label_id":{id},"limit":1}}"#));
+            if let Some(first) = msgs.get("ok").and_then(|v| v.as_array()).and_then(|a| a.first()) {
+                if let Some(mid) = first["id"].as_u64() {
+                    let body = call("message_body", &format!(r#"{{"id":{mid}}}"#));
+                    if let Some(ok) = body.get("ok") {
+                        let text = ok["text"].as_str().unwrap_or("");
+                        println!("  body check label {}: mime={} len={} html_tags_left={}",
+                                 id, ok["mime_type"], text.len(),
+                                 text.contains("<div") || text.contains("<img"));
+                    } else {
+                        println!("  body check label {}: {}", id, body);
+                    }
+                }
+            }
+        }
+    }
+
     unsafe { proton_core_free(core) };
 }
