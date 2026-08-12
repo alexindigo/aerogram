@@ -14,11 +14,23 @@ fn main() {
     let labels = call("list_labels", "{}");
     let id = labels["ok"][0]["id"].as_u64().unwrap();
     let msgs = call("list_messages", &format!(r#"{{"label_id":{id},"limit":1}}"#));
-    let mid = msgs["ok"][0]["id"].as_u64().unwrap();
+    let mid = msgs["ok"]["messages"][0]["id"].as_u64().unwrap();
     let b = call("message_body", &format!(r#"{{"id":{mid}}}"#));
     let hdr = b["ok"]["header"].as_str().unwrap_or("");
-    println!("header present: {} ({} bytes); has From={} Subject={} Date={}",
-             !hdr.is_empty(), hdr.len(),
-             hdr.contains("From"), hdr.to_lowercase().contains("subject"), hdr.contains("Date"));
+    println!("header: {} bytes", hdr.len());
+    // Print header NAMES + any content-type/mime-version values only
+    // (never content): is it the real message headers?
+    for line in hdr.lines() {
+        if line.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            let name = line.split(':').next().unwrap_or("");
+            let value = if name.eq_ignore_ascii_case("content-type")
+                          || name.eq_ignore_ascii_case("mime-version") {
+                line.splitn(2, ':').nth(1).unwrap_or("").trim()
+            } else {
+                "…"
+            };
+            println!("  {}: {}", name, value);
+        }
+    }
     unsafe { proton_core_free(core) };
 }

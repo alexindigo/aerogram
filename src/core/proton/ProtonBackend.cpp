@@ -465,68 +465,6 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
         });
 }
 
-/// \brief Synthesize a faithful RFC822 message (.eml) from the original
-///        header block + the decrypted/sanitized bodies, in the same
-///        format IMAP stores. Kept headers (From/To/Subject/Date/
-///        Message-ID/Cc…); Content-* and MIME-Version are regenerated
-///        to describe the new multipart/alternative body.
-static QByteArray buildEml(const QString &rawHeader, const QString &plainBody,
-                           const QString &htmlBody)
-{
-    // Parse the original header block via KMime (LF-normalized; empty
-    // body appended) and copy every non-content header verbatim.
-    KMime::Message orig;
-    orig.setContent(KMime::CRLFtoLF(rawHeader.toUtf8()) + "\n\n");
-    orig.parse();
-
-    QByteArray out;
-    auto putLine = [&out](const QString &name, const QString &value) {
-        if (!value.isEmpty())
-            out += name.toUtf8() + ": " + value.toUtf8() + "\r\n";
-    };
-    for (const auto *h : orig.headers()) {
-        const QString name = QString::fromLatin1(h->type());
-        const QString k = name.toLower();
-        if (k.startsWith(QStringLiteral("content-"))
-            || k == QLatin1String("mime-version"))
-            continue;  // regenerated below for the new body structure
-        out += name.toUtf8() + ": " + h->asUnicodeString().toUtf8() + "\r\n";
-    }
-
-    if (htmlBody.isEmpty()) {
-        putLine(QStringLiteral("MIME-Version"), QStringLiteral("1.0"));
-        putLine(QStringLiteral("Content-Type"),
-                QStringLiteral("text/plain; charset=utf-8"));
-        putLine(QStringLiteral("Content-Transfer-Encoding"),
-                QStringLiteral("base64"));
-        out += "\r\n";
-        out += plainBody.toUtf8().toBase64();
-        out += "\r\n";
-        return out;
-    }
-
-    const QByteArray boundary = "aerogram-" + QByteArray::number(
-        qHash(plainBody + htmlBody), 36);
-    putLine(QStringLiteral("MIME-Version"), QStringLiteral("1.0"));
-    putLine(QStringLiteral("Content-Type"),
-            QStringLiteral("multipart/alternative; boundary=\"")
-            + QString::fromLatin1(boundary) + QStringLiteral("\""));
-    out += "\r\n";
-
-    out += "--" + boundary + "\r\n"
-           "Content-Type: text/plain; charset=utf-8\r\n"
-           "Content-Transfer-Encoding: base64\r\n\r\n"
-        + plainBody.toUtf8().toBase64() + "\r\n";
-
-    out += "--" + boundary + "\r\n"
-           "Content-Type: text/html; charset=utf-8\r\n"
-           "Content-Transfer-Encoding: base64\r\n\r\n"
-        + htmlBody.toUtf8().toBase64() + "\r\n";
-
-    out += "--" + boundary + "--\r\n";
-    return out;
-}
-
 /// \brief Persist a fetched message as a faithful .eml into the shared
 ///        store (encrypted shard) + FTS index — the same format IMAP
 ///        uses, so Proton mail is searchable and offline-readable.
@@ -540,10 +478,19 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     if (m_shuttingDown || m_key.isEmpty() || plainBody.isEmpty())
         return;
 
-    const QByteArray eml = buildEml(apiMsg.value(QStringLiteral("header")).toString(),
-                                    plainBody,
-                                    apiMsg.value(QStringLiteral("html")).toString());
-    // One facade call: shard + index row + FTS — serialized inside.
+    // Faithful original .eml: the message's REAL header block (the SDK's
+    // headers describe the plaintext content, not the encryption
+    // wrapper) + the decrypted body VERBATIM. No synthesis — we store
+    // the message as it was written, DKIM/Received/provenance intact.
+    // (Attachments are separate encrypted blobs in Proton — they stay
+    // on the SDK's saveAttachment path for now.)
+    QByteArray eml = apiMsg.value(QStringLiteral("header")).toString().toUtf8();
+    if (!eml.endsWith("\n"))
+        eml += "\r\n";
+    eml += "\r\n";
+    const QString html = apiMsg.value(QStringLiteral("html")).toString();
+    eml += (html.isEmpty() ? plainBody : html).toUtf8();
+
     m_store.storeMessage(conversationId, eml, plainBody);
 }
 
