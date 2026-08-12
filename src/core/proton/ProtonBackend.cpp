@@ -137,11 +137,17 @@ void ProtonBackend::startEventLoop()
                 // Message-table change: persist new arrivals' bodies into
                 // the local store right away (search + offline), not just
                 // when someone happens to open the folder. INBOX is the
-                // arrival point for incoming mail.
+                // arrival point for incoming mail. QUEUED onto the UI
+                // thread: fetchMessages touches QFutureSynchronizer and
+                // other non-thread-safe members — never call it from the
+                // raw event thread.
                 for (const QJsonValue &t : tags) {
                     if (t.toString() == QLatin1String("messages")
                             && !m_inboxLocalId.isEmpty() && !m_key.isEmpty()) {
-                        fetchMessages(m_inboxLocalId);  // emits + prefetches/persists
+                        QMetaObject::invokeMethod(this, [this]() {
+                            if (!m_shuttingDown)
+                                fetchMessages(m_inboxLocalId);
+                        }, Qt::QueuedConnection);
                         break;
                     }
                 }
@@ -288,7 +294,7 @@ void ProtonBackend::fetchConversations()
                 c.id = o.value(QStringLiteral("id")).toString();
                 c.kind = QStringLiteral("folder");
                 c.name = o.value(QStringLiteral("name")).toString();
-                c.unreadCount = 0;  // TODO: label counters (LabelWithCounters)
+                c.unreadCount = static_cast<int>(o.value(QStringLiteral("unread")).toInteger());
                 c.lastActivity = QDateTime::currentDateTime();
                 convs.append(c);
             }
@@ -389,6 +395,11 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
                                          .arg(QDateTime::currentMSecsSinceEpoch());
                 for (int i = 0; i < prefetchCount; ++i) {
                     const QString mid = messages.at(i).messageId;
+                    // Skip bodies the store already has — without this,
+                    // every listing (and every push event) re-downloads
+                    // the same 20 bodies forever.
+                    if (!m_store.filePathForMessage(mid).isEmpty())
+                        continue;
                     {
                         QMutexLocker lock(&m_prefetchMutex);
                         m_prefetchInFlight.insert(mid);

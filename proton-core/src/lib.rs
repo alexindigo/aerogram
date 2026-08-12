@@ -538,6 +538,23 @@ async fn list_labels(core: &ProtonCore) -> Result<Value, String> {
             "name": l.name,
         }));
     }
+
+    // Real unread/total counters per label (the visible "new mail"
+    // signal). Best-effort: a counter failure must not kill the list.
+    let ids: Vec<LabelId> = out
+        .iter()
+        .filter_map(|l| l.get("id").and_then(Value::as_str).map(LabelId::from))
+        .collect();
+    if let Ok(counts) = api.get_messages_count_for_labels(ids).await {
+        for c in counts.counts {
+            if let Some(l) = out.iter_mut().find(|l| {
+                l.get("id").and_then(Value::as_str) == Some(c.label_id.as_str())
+            }) {
+                l["total"] = json!(c.total);
+                l["unread"] = json!(c.unread);
+            }
+        }
+    }
     Ok(Value::Array(out))
 }
 
