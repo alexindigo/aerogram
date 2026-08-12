@@ -48,6 +48,12 @@ Item {
                 // modelData shadows the message's modelData.
                 property string messageId: modelData.messageId || ""
                 Layout.fillWidth: true
+
+                // Panel-facing entry point: appendBodyChunk calls THIS on
+                // the delegate root (ids don't resolve across instances).
+                function appendChunk(chunk, lastChunk) {
+                    bodyArea.appendChunkImpl(chunk, lastChunk)
+                }
                 Layout.fillHeight: true
                 spacing: 8
 
@@ -116,7 +122,7 @@ Item {
                     property string htmlAccum: ""
                     property bool richMode: false
 
-                    function appendChunk(chunk, lastChunk) {
+                    function appendChunkImpl(chunk, lastChunk) {
                         if (!richMode)
                             console.log("PERF first-chunk msg=" + modelData.messageId
                                         + " abs=" + Date.now() + " len=" + chunk.length)
