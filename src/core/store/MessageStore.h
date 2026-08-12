@@ -45,8 +45,11 @@ public:
 
     /// \brief Encrypt + store raw bytes; returns the relative path
     ///        (shard form). \p keyHint should be the Message-ID (or
-    ///        folder:uid fallback).
-    QString put(const QByteArray &raw, const QString &keyHint)
+    ///        folder:uid fallback). With `overwrite`, an existing shard
+    ///        is replaced (content upgrades only — e.g. plain-only eml
+    ///        gaining its html part).
+    QString put(const QByteArray &raw, const QString &keyHint,
+                bool overwrite = false)
     {
         const QByteArray hash = QCryptographicHash::hash(keyHint.toUtf8(),
                                                          QCryptographicHash::Sha256)
@@ -58,8 +61,13 @@ public:
                           + QString::fromLatin1(hash)
                           + QStringLiteral(".enc");
         const QString full = m_root + QLatin1Char('/') + rel;
-        if (QFile::exists(full) || m_key.isEmpty())
+        // Content-addressable dedup: never rewrite… EXCEPT when the
+        // caller explicitly upgrades the representation (e.g. a shard
+        // written before we stored multipart emls gains an html part).
+        if (!overwrite && (QFile::exists(full) || m_key.isEmpty()))
             return rel;
+        if (overwrite && m_key.isEmpty())
+            return rel;  // fail closed without the key, always
 
         QDir().mkpath(QFileInfo(full).absolutePath());
 

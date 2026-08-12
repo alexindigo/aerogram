@@ -98,9 +98,33 @@ void EmailStore::storeMessage(const QString &conversationId, const QByteArray &e
     if (m_key.isEmpty() || eml.isEmpty())
         return;
     const auto parsed = ContentPipeline::parse(eml);
+    const QString keyHint = parsed.messageId.isEmpty()
+        ? (conversationId + QLatin1Char(':') + QString::number(parsed.date.toSecsSinceEpoch()))
+        : parsed.messageId;
+
+    QMutexLocker lock(&m_mutex);
+    if (m_key.isEmpty())
+        return;
+
+    // Content upgrade: a shard written before we stored multipart emls
+    // (plain-only) gets replaced when the same message now carries an
+    // html part. The shard is a cache of the best representation.
+    bool overwrite = false;
+    MessageStore store(m_storeRoot, m_key);
+    const QString rel = store.put(eml, keyHint);   // dedup-probe: same path
+    if (auto *idx = index()) {
+        if (idx->filePathForMessage(keyHint) == rel
+                && eml.contains("text/html")) {
+            const QByteArray old = store.get(rel);
+            if (!old.isEmpty() && !old.contains("text/html"))
+                overwrite = true;   // plain-only → multipart upgrade
+        }
+    }
+    if (overwrite)
+        store.put(eml, keyHint, /*overwrite=*/true);
 
     Message m;
-    m.messageId = parsed.messageId;
+    m.messageId = keyHint;
     m.conversationId = conversationId;
     m.subject = parsed.subject;
     m.sender = parsed.sender;
@@ -108,13 +132,6 @@ void EmailStore::storeMessage(const QString &conversationId, const QByteArray &e
     m.snippet = ContentPipeline::snippetFrom(parsed.bodyPlain);
     m.isUnread = false;
 
-    QMutexLocker lock(&m_mutex);
-    if (m_key.isEmpty())
-        return;
-    MessageStore store(m_storeRoot, m_key);
-    const QString rel = store.put(eml, parsed.messageId.isEmpty()
-                                        ? (conversationId + QLatin1Char(':') + QString::number(parsed.date.toSecsSinceEpoch()))
-                                        : parsed.messageId);
     if (auto *idx = index())
         idx->insertMessages({m}, {plainBody}, {rel}, {attachments});
 }
