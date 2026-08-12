@@ -1,6 +1,7 @@
 #include "ContentPipeline.h"
 
 #include "HtmlSanitizer.h"
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
 
@@ -89,17 +90,23 @@ ContentPipeline::StreamedParts ContentPipeline::parseStreamed(const QByteArray &
                                                               int chunkCount)
 {
     // Reuse the single-pass parse for metadata + plain.
+    const qint64 tParse = QDateTime::currentMSecsSinceEpoch();
     StreamedParts out;
     const ParsedContent p = parse(eml);
+    const qint64 parseMs = QDateTime::currentMSecsSinceEpoch() - tParse;
     out.plain = p.bodyPlain;
     out.blockedRemote = p.remoteContentBlocked;
 
-    if (p.bodyHtmlRaw.isEmpty())
+    if (p.bodyHtmlRaw.isEmpty()) {
+        qInfo().noquote() << QStringLiteral("PERF pipeline parse_ms=%1 sanitize_ms=0 eml_bytes=%2 plain_only")
+                                 .arg(parseMs).arg(eml.size());
         return out;
+    }
 
     // Stream the raw html through the sanitizer: lol-html flushes clean
     // bytes as it parses, so each write returns a progress chunk.
     // (stream FFI declared in HtmlSanitizer.h)
+    const qint64 tSan = QDateTime::currentMSecsSinceEpoch();
     const QByteArray rawUtf8 = p.bodyHtmlRaw.toUtf8();
     const int step = qMax(1, rawUtf8.size() / qMax(1, chunkCount));
     void *stream = sanitize_stream_new();
@@ -128,6 +135,12 @@ ContentPipeline::StreamedParts ContentPipeline::parseStreamed(const QByteArray &
         flushed.append(lastChunk);
 
     out.htmlChunks = flushed;
+    qInfo().noquote() << QStringLiteral("PERF pipeline parse_ms=%1 sanitize_ms=%2 eml_bytes=%3 html_bytes=%4 chunks=%5")
+                             .arg(parseMs)
+                             .arg(QDateTime::currentMSecsSinceEpoch() - tSan)
+                             .arg(eml.size())
+                             .arg(rawUtf8.size())
+                             .arg(flushed.size());
     return out;
 }
 

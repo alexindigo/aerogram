@@ -23,7 +23,7 @@ Item {
         // v1: one open message — the repeater's only delegate.
         const d = messageRepeater.itemAt(0)
         if (d && d.messageId === messageId)
-            d.appendChunk(chunk)
+            d.appendChunk(chunk, lastChunk)
     }
 
     Kirigami.PlaceholderMessage {
@@ -116,20 +116,32 @@ Item {
                     property string htmlAccum: ""
                     property bool richMode: false
 
-                    function appendChunk(chunk) {
+                    function appendChunk(chunk, lastChunk) {
+                        if (!richMode)
+                            console.log("PERF first-chunk msg=" + modelData.messageId
+                                        + " abs=" + Date.now() + " len=" + chunk.length)
                         htmlAccum += chunk
                         if (!richMode) {
                             richMode = true
                             bodyEdit.textFormat = TextEdit.RichText
                             bodyEdit.text = ""   // switch from plain
                         }
+                        const t0 = Date.now()
                         htmlTextAppender.appendHtml(bodyEdit, chunk)
+                        console.log("PERF chunk-paint msg=" + modelData.messageId
+                                    + " dur=" + (Date.now() - t0) + " len=" + chunk.length)
+                        if (lastChunk)
+                            console.log("PERF last-chunk msg=" + modelData.messageId
+                                        + " abs=" + Date.now())
                     }
 
                     // Loader: body arrives async (decrypt + sanitize on a
                     // worker). Until then show a spinner, not a blank page.
                     property bool bodyLoaded: (modelData.body && modelData.body.length > 0)
                                               || htmlAccum.length > 0
+                    onBodyLoadedChanged: if (bodyLoaded)
+                        console.log("PERF plain-paint msg=" + modelData.messageId
+                                    + " abs=" + Date.now())
 
                     ScrollView {
                         anchors.fill: parent

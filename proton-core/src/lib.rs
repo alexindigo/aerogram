@@ -606,6 +606,9 @@ impl DecryptableMessage for LeanMessage {
 }
 
 async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String> {
+    // PERF: per-stage timings ride back in the payload ("timings") so the
+    // app can attribute open latency without guessing inside the FFI.
+    let t_start = std::time::Instant::now();
     let id = params
         .get("id")
         .and_then(Value::as_str)
@@ -618,6 +621,7 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         .get_message(MessageId::from(id.clone()))
         .await
         .map_err(|e| format!("get_message: {e:?}"))?;
+    let t_got = std::time::Instant::now();
     let m = &full.message;
 
     // Decrypt the body with the message's OWN address keyring.
@@ -631,6 +635,7 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         .unlocked_address_keys(&pgp, &tether, &api, &m.metadata.address_id)
         .await
         .map_err(|e| format!("unlock address keys: {e:?}"))?;
+    let t_keys = std::time::Instant::now();
 
     let is_mime = format!("{:?}", m.body.mime_type) == "MultipartMixed";
     let lean = LeanMessage {
@@ -645,6 +650,7 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         .processed_body()
         .map_err(|e| format!("processed_body: {e:?}"))?;
     let body_text = dec.into_string();
+    let t_dec = std::time::Instant::now();
 
     let is_html = format!("{:?}", m.body.mime_type) == "TextHtml";
     let (text, html, blocked_remote) = if is_html {
@@ -669,6 +675,16 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         })
         .collect();
 
+    let t_san = std::time::Instant::now();
+    let timings = json!({
+        "get_message_ms": (t_got - t_start).as_millis(),
+        "unlock_keys_ms": (t_keys - t_got).as_millis(),
+        "decrypt_ms": (t_dec - t_keys).as_millis(),
+        "sanitize_ms": (t_san - t_dec).as_millis(),
+        "total_ms": (t_san - t_start).as_millis(),
+        "raw_bytes": body_text.len(),
+    });
+
     Ok(json!({
         "text": text,
         "html": html,
@@ -676,6 +692,7 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         "mime_type": format!("{:?}", m.body.mime_type),
         "header": m.body.header,
         "attachments": attachments,
+        "timings": timings,
     }))
 }
 

@@ -2,6 +2,8 @@
 
 #include "core/content/ContentPipeline.h"
 
+#include <QDateTime>
+
 EmailStore::EmailStore(const QString &indexDbPath, const QString &storeRoot)
     : m_indexDb(indexDbPath), m_storeRoot(storeRoot)
 {
@@ -110,6 +112,7 @@ void EmailStore::storeMessage(const QString &conversationId, const QByteArray &e
     // (plain-only) gets replaced when the same message now carries an
     // html part. The shard is a cache of the best representation.
     bool overwrite = false;
+    const qint64 tPut = QDateTime::currentMSecsSinceEpoch();
     MessageStore store(m_storeRoot, m_key);
     const QString rel = store.put(eml, keyHint);   // dedup-probe: same path
     if (auto *idx = index()) {
@@ -122,6 +125,11 @@ void EmailStore::storeMessage(const QString &conversationId, const QByteArray &e
     }
     if (overwrite)
         store.put(eml, keyHint, /*overwrite=*/true);
+    qInfo().noquote() << QStringLiteral("PERF store-put msg=%1 dur=%2 bytes=%3 overwrite=%4")
+                             .arg(keyHint)
+                             .arg(QDateTime::currentMSecsSinceEpoch() - tPut)
+                             .arg(eml.size())
+                             .arg(overwrite);
 
     Message m;
     m.messageId = keyHint;
@@ -132,8 +140,13 @@ void EmailStore::storeMessage(const QString &conversationId, const QByteArray &e
     m.snippet = ContentPipeline::snippetFrom(parsed.bodyPlain);
     m.isUnread = false;
 
+    const qint64 tFts = QDateTime::currentMSecsSinceEpoch();
     if (auto *idx = index())
         idx->insertMessages({m}, {plainBody}, {rel}, {attachments});
+    qInfo().noquote() << QStringLiteral("PERF store-fts msg=%1 dur=%2 plain_len=%3")
+                             .arg(keyHint)
+                             .arg(QDateTime::currentMSecsSinceEpoch() - tFts)
+                             .arg(plainBody.size());
 }
 
 void EmailStore::writeFolderSync(const QString &folder,
