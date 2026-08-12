@@ -637,7 +637,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     if (atts.isEmpty()) {
         const QByteArray eml = assembleCompleteEml(
             apiMsg.value(QStringLiteral("header")).toString(), plainBody, html, {}, {});
-        m_store.storeMessage(conversationId, eml, plainBody, {});
+        m_store.storeMessage(conversationId, eml, plainBody, {}, messageId);
         qInfo().noquote() << QStringLiteral("PERF persist-end msg=%1 dur=%2 eml_bytes=%3")
                                  .arg(messageId)
                                  .arg(QDateTime::currentMSecsSinceEpoch() - tPersist)
@@ -677,7 +677,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
             const QByteArray eml = assembleCompleteEml(
                 apiMsg.value(QStringLiteral("header")).toString(), plainBody, html,
                 metas, blobs);
-            m_store.storeMessage(conversationId, eml, plainBody, metas);
+            m_store.storeMessage(conversationId, eml, plainBody, metas, messageId);
             qInfo().noquote() << QStringLiteral("PERF persist-end msg=%1 dur=%2 eml_bytes=%3 with_attachments")
                                      .arg(messageId)
                                      .arg(QDateTime::currentMSecsSinceEpoch() - tPersist)

@@ -95,14 +95,17 @@ EmailStore::BodyParts EmailStore::readBodyStreamed(const QString &messageId)
 
 void EmailStore::storeMessage(const QString &conversationId, const QByteArray &eml,
                               const QString &plainBody,
-                              const QVector<AttachmentMeta> &attachments)
+                              const QVector<AttachmentMeta> &attachments,
+                              const QString &keyOverride)
 {
     if (m_key.isEmpty() || eml.isEmpty())
         return;
     const auto parsed = ContentPipeline::parse(eml);
-    const QString keyHint = parsed.messageId.isEmpty()
-        ? (conversationId + QLatin1Char(':') + QString::number(parsed.date.toSecsSinceEpoch()))
-        : parsed.messageId;
+    const QString keyHint = !keyOverride.isEmpty()
+        ? keyOverride
+        : parsed.messageId.isEmpty()
+            ? (conversationId + QLatin1Char(':') + QString::number(parsed.date.toSecsSinceEpoch()))
+            : parsed.messageId;
 
     QMutexLocker lock(&m_mutex);
     if (m_key.isEmpty())

@@ -56,9 +56,13 @@ public:
 
     // ---- writes ----
     /// Persist one message as an .eml (put shard + index row).
+    /// keyOverride: backends whose model ids are NOT the RFC822
+    /// Message-Id (Proton: remote ids) MUST pass it — reads, reconciles
+    /// and listings all key off the model id, never the header id.
     void storeMessage(const QString &conversationId, const QByteArray &eml,
                       const QString &plainBody,
-                      const QVector<AttachmentMeta> &attachments = {});
+                      const QVector<AttachmentMeta> &attachments = {},
+                      const QString &keyOverride = {});
     /// Batch write + reconcile a folder listing (IMAP sync).
     void writeFolderSync(const QString &folder,
                          const QVector<Message> &msgs,
