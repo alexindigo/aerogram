@@ -15,8 +15,19 @@ Item {
 
     signal attachmentSaveRequested(string messageId, int partIndex, string path)
 
-    /// Progressive render entry point (wired in main.qml to the
-    /// controller's messageBodyChunkReady). Appends a sanitized html
+    /// Chunk subscription lives ON the panel (Connections dies with it).
+    /// The previous design — main.qml imperatively connecting the
+    /// controller's signal to a captured `item` — leaked a connection
+    /// per panel-layout rebuild, each holding a destroyed delegate
+    /// (198 "is not a function" TypeErrors in one session).
+    Connections {
+        target: accountController
+        function onMessageBodyChunkReady(convId, mid, chunk, lastChunk, blocked) {
+            messagesPanel.appendBodyChunk(mid, chunk, lastChunk, blocked)
+        }
+    }
+
+    /// Progressive render entry point. Appends a sanitized html
     /// chunk into the open message's body — imperative, so no model
     /// rebuild can wipe the stream.
     function appendBodyChunk(messageId, chunk, lastChunk, blocked) {
