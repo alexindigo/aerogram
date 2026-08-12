@@ -133,6 +133,7 @@ Item {
                     // as before. State is delegate-local.
                     property string htmlAccum: ""
                     property bool richMode: false
+                    property int blockIndex: 0
                     readonly property bool expectingHtml: modelData.hasHtml === true
 
                     function appendChunkImpl(chunk, lastChunk) {
@@ -145,6 +146,18 @@ Item {
                             bodyEdit.textFormat = TextEdit.RichText
                             bodyEdit.text = ""   // switch from plain
                         }
+                        // Debug (AEROGRAM_DEBUG_BLOCKS=1): mark each block
+                        // boundary inline so the streamed split is visible.
+                        // (After the rich flip — markers are HTML.)
+                        if (accountController.debugBlocks) {
+                            const hues = ["#fff3cd", "#d1ecf1", "#d4edda", "#f8d7da", "#e2d9f3"]
+                            const bg = hues[blockIndex % hues.length]
+                            htmlTextAppender.appendHtml(bodyEdit,
+                                "<div style=\"background-color:" + bg + ";color:#555;"
+                                + "font-size:9px\">▸ block " + blockIndex
+                                + " (" + chunk.length + " chars)</div>")
+                        }
+                        blockIndex += 1
                         const t0 = Date.now()
                         htmlTextAppender.appendHtml(bodyEdit, chunk)
                         console.log("PERF chunk-paint msg=" + modelData.messageId
