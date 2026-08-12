@@ -285,7 +285,7 @@ void ProtonBackend::fetchConversations()
             for (const QJsonValue &v : r.toArray()) {
                 const QJsonObject o = v.toObject();
                 Conversation c;
-                c.id = QString::number(o.value(QStringLiteral("id")).toInteger());
+                c.id = o.value(QStringLiteral("id")).toString();
                 c.kind = QStringLiteral("folder");
                 c.name = o.value(QStringLiteral("name")).toString();
                 c.unreadCount = 0;  // TODO: label counters (LabelWithCounters)
@@ -342,7 +342,7 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
             for (const QJsonValue &v : arr) {
                 const QJsonObject o = v.toObject();
                 Message m;
-                m.messageId = QString::number(o.value(QStringLiteral("id")).toInteger());
+                m.messageId = o.value(QStringLiteral("id")).toString();
                 m.conversationId = conversationId;
                 m.subject = o.value(QStringLiteral("subject")).toString();
                 QString sender = o.value(QStringLiteral("sender_name")).toString();
