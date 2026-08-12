@@ -400,11 +400,20 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
         QStringList cachedChunks;
         bool cachedBlocked = false;
         {
-            const auto parts = m_store.readBodyStreamed(messageId);
-            if (parts.found) {
-                cachedText = parts.plain;
-                cachedChunks = parts.htmlChunks;
-                cachedBlocked = parts.blockedRemote;
+            // Legacy shards (raw plain text from before the .eml
+            // synthesis) can never stream HTML — treat as a miss so the
+            // live fetch below re-persists in multipart (self-healing
+            // upgrade). Detected via the missing Content-Type header.
+            const QString rel = m_store.filePathForMessage(messageId);
+            const QByteArray raw = rel.isEmpty() ? QByteArray()
+                                                 : m_store.readShard(rel);
+            if (!raw.isEmpty() && raw.contains("Content-Type:")) {
+                const auto parts = m_store.readBodyStreamed(messageId);
+                if (parts.found) {
+                    cachedText = parts.plain;
+                    cachedChunks = parts.htmlChunks;
+                    cachedBlocked = parts.blockedRemote;
+                }
             }
         }
         if (!cachedText.isEmpty()) {
