@@ -659,7 +659,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
         meta.size = o.value(QStringLiteral("size")).toInteger();
         metas.append(meta);
         fetches.append(call(QStringLiteral("get_attachment"),
-                            {{QStringLiteral("id"), o.value(QStringLiteral("id")).toInteger()}}));
+                            {{QStringLiteral("id"), o.value(QStringLiteral("id")).toString()}}));
     }
 
     QtFuture::whenAll(fetches.begin(), fetches.end())
