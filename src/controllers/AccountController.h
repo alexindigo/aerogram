@@ -122,6 +122,10 @@ signals:
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body, const QString &bodyHtml,
                           bool remoteContentBlocked);
+    /// Progressive render passthrough (see BackendPlugin).
+    void messageBodyChunkReady(const QString &conversationId, const QString &messageId,
+                               const QString &htmlChunk, bool lastChunk,
+                               bool remoteContentBlocked);
     void attachmentSaved(bool ok, const QString &messageId, const QString &path);
     void ioStarted(const QString &accountId, bool ok, const QString &error);
     void ioStopped(const QString &accountId);

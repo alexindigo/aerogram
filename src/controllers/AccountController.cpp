@@ -466,6 +466,32 @@ void AccountController::connectBackend(const Account &account)
                                       messageId, body, bodyHtml, remoteContentBlocked);
             });
 
+    connect(backend, &BackendPlugin::messageBodyChunkReady, this,
+            [this, accountId](const QString &localConvId, const QString &messageId,
+                              const QString &htmlChunk, bool lastChunk,
+                              bool remoteContentBlocked) {
+                if (messageId == m_activeMessageId) {
+                    // Progressive render: append the chunk to the active
+                    // entry's bodyHtml (the pane inserts only the delta).
+                    QVariantList msgs = m_activeMessages;
+                    for (int i = 0; i < msgs.size(); ++i) {
+                        QVariantMap e = msgs[i].toMap();
+                        if (e.value(QStringLiteral("messageId")).toString() == messageId) {
+                            e[QStringLiteral("bodyHtml")] =
+                                e.value(QStringLiteral("bodyHtml")).toString() + htmlChunk;
+                            if (lastChunk)
+                                e[QStringLiteral("remoteContentBlocked")] = remoteContentBlocked;
+                            msgs[i] = e;
+                            setActiveMessages(msgs);
+                            break;
+                        }
+                    }
+                }
+                emit messageBodyChunkReady(accountId + QStringLiteral("/") + localConvId,
+                                           messageId, htmlChunk, lastChunk,
+                                           remoteContentBlocked);
+            });
+
     connect(backend, &BackendPlugin::attachmentSaved, this,
             [this](bool ok, const QString &messageId, const QString &path) {
                 m_attachmentSaveStatus = ok ? QStringLiteral("Saved to ") + path

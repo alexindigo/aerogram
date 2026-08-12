@@ -290,6 +290,19 @@ private:
                     broadcastEvent(QStringLiteral("messageBodyReady"), p);
                 });
 
+        connect(m_controller, &AccountController::messageBodyChunkReady, this,
+                [this](const QString &conversationId, const QString &messageId,
+                       const QString &htmlChunk, bool lastChunk,
+                       bool remoteContentBlocked) {
+                    QJsonObject p;
+                    p["conversationId"] = conversationId;
+                    p["messageId"] = messageId;
+                    p["chunk"] = htmlChunk;
+                    p["lastChunk"] = lastChunk;
+                    p["remoteContentBlocked"] = remoteContentBlocked;
+                    broadcastEvent(QStringLiteral("messageBodyChunkReady"), p);
+                });
+
         connect(m_controller, &AccountController::attachmentSaved, this,
                 [this](bool ok, const QString &messageId, const QString &path) {
                     QJsonObject p;

@@ -36,6 +36,8 @@ qt_add_executable(aerogram
     src/core/imap/CurlTransport.h
     src/core/store/MessageStore.h
     src/core/store/MetadataIndex.h
+    src/core/store/EmailStore.h
+    src/core/store/EmailStore.cpp
     src/core/imap/ImapBackend.h
     src/core/ipc/IpcServer.h
     src/core/proton/ProtonBackend.h

@@ -130,3 +130,34 @@ ContentPipeline::StreamedParts ContentPipeline::parseStreamed(const QByteArray &
     out.htmlChunks = flushed;
     return out;
 }
+
+QStringList ContentPipeline::sanitizeStreamed(const QString &rawHtml, int chunkCount)
+{
+    // Stream through the sanitizer; each flushed chunk is a display
+    // fragment in order. (Shared with parseStreamed's html stage.)
+    const QByteArray rawUtf8 = rawHtml.toUtf8();
+    const int step = qMax(1, rawUtf8.size() / qMax(1, chunkCount));
+    void *stream = sanitize_stream_new();
+
+    QStringList flushed;
+    for (int i = 0; i < rawUtf8.size(); i += step) {
+        const QByteArray part = rawUtf8.mid(i, step);
+        char *raw = sanitize_stream_write(stream, part.constData());
+        const QJsonObject o =
+            QJsonDocument::fromJson(QString::fromUtf8(raw ? raw : "").toUtf8()).object();
+        if (raw)
+            sanitize_free_string(raw);
+        const QString chunk = o.value(QStringLiteral("chunk")).toString();
+        if (!chunk.isEmpty())
+            flushed.append(chunk);
+    }
+    char *raw = sanitize_stream_finish(stream);  // frees the stream
+    const QJsonObject o =
+        QJsonDocument::fromJson(QString::fromUtf8(raw ? raw : "").toUtf8()).object();
+    if (raw)
+        sanitize_free_string(raw);
+    const QString lastChunk = o.value(QStringLiteral("chunk")).toString();
+    if (!lastChunk.isEmpty())
+        flushed.append(lastChunk);
+    return flushed;
+}

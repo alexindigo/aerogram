@@ -9,8 +9,7 @@
 #include <QTimer>
 #include <QtConcurrent>
 
-#include "../store/MessageStore.h"
-#include "../store/MetadataIndex.h"
+#include "../store/EmailStore.h"
 #include "core/content/ContentPipeline.h"
 #include "core/content/HtmlSanitizer.h"
 
@@ -79,6 +78,7 @@ bool ProtonBackend::initialize(const QVariantMap &params)
     m_storeRoot = m_dataDir + QStringLiteral("/store/storage");
     m_indexDb = m_dataDir + QStringLiteral("/store/index.db");
     QDir().mkpath(m_storeRoot);
+    m_store.setPaths(m_indexDb, m_storeRoot);
 
     m_core = proton_core_new(m_dataDir.toUtf8().constData());
     if (!m_core) {
@@ -98,32 +98,13 @@ void ProtonBackend::shutdown()
         m_eventThread.join();
     }
     m_workers.waitForFinished();
-    {
-        QMutexLocker storeLock(&m_storeMutex);
-        delete m_storeIndex;
-        m_storeIndex = nullptr;
-    }
     if (m_core) {
         proton_core_free(m_core);
         m_core = nullptr;
     }
 }
 
-MetadataIndex *ProtonBackend::storeIndex()
-{
-    // Caller holds m_storeMutex. Lazy-open: the KDF runs once per
-    // backend session, not once per operation.
-    if (!m_storeIndex && !m_key.isEmpty()) {
-        m_storeIndex = new MetadataIndex(m_indexDb, m_key);
-        QString err;
-        if (!m_storeIndex->open(&err)) {
-            qWarning().noquote() << "ProtonBackend: index open failed:" << err;
-            delete m_storeIndex;
-            m_storeIndex = nullptr;
-        }
-    }
-    return m_storeIndex;
-}
+
 
 void ProtonBackend::purgeLocalData()
 {
@@ -373,19 +354,11 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
             // shards). Skipped for truncated listings.
             if (!m_key.isEmpty() && !m_shuttingDown
                     && qint64(messages.size()) == total) {
-                QMutexLocker storeLock(&m_storeMutex);
-                MetadataIndex *idx = storeIndex();
-                if (idx) {
-                    const QVector<QString> gone =
-                        idx->removeMissingFromConversation(conversationId, presentIds);
-                    if (!gone.isEmpty()) {
-                        MessageStore store(m_storeRoot, m_key);
-                        for (const QString &rel : gone)
-                            store.remove(rel);
-                        qInfo() << "ProtonBackend: reconciled" << conversationId
-                                << "— removed" << gone.size() << "deleted message(s)";
-                    }
-                }
+                const QVector<QString> gone =
+                    m_store.reconcileConversation(conversationId, presentIds);
+                if (!gone.isEmpty())
+                    qInfo() << "ProtonBackend: reconciled" << conversationId
+                            << "— removed" << gone.size() << "deleted message(s)";
             }
 
             // Prefetch bodies into the local store (first N) so opens
@@ -424,30 +397,28 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
     // time via the shared pipeline (defense in depth).
     if (!m_key.isEmpty()) {
         QString cachedText;
-        QString cachedHtml;
+        QStringList cachedChunks;
         bool cachedBlocked = false;
         {
-            QMutexLocker storeLock(&m_storeMutex);
-            MetadataIndex *idx = storeIndex();
-            if (idx) {
-                const QString rel = idx->filePathForMessage(messageId);
-                if (!rel.isEmpty()) {
-                    MessageStore store(m_storeRoot, m_key);
-                    const QByteArray raw = store.get(rel);
-                    if (!raw.isEmpty()) {
-                        // Faithful .eml — through the shared pipeline
-                        // (parse + sanitize), exactly like IMAP.
-                        const auto parsed = ContentPipeline::parse(raw);
-                        cachedText = parsed.bodyPlain;
-                        cachedHtml = parsed.bodyHtmlSafe;
-                        cachedBlocked = parsed.remoteContentBlocked;
-                    }
-                }
+            const auto parts = m_store.readBodyStreamed(messageId);
+            if (parts.found) {
+                cachedText = parts.plain;
+                cachedChunks = parts.htmlChunks;
+                cachedBlocked = parts.blockedRemote;
             }
         }
         if (!cachedText.isEmpty()) {
+            // Plain text paints instantly…
             emit messageBodyReady(conversationId, messageId, cachedText,
-                                  cachedHtml, cachedBlocked);
+                                  QString(), cachedBlocked);
+            // …then sanitized HTML chunks stream in for progressive
+            // render (first paint never waits for the whole doc).
+            for (int i = 0; i < cachedChunks.size(); ++i) {
+                emit messageBodyChunkReady(conversationId, messageId,
+                                           cachedChunks.at(i),
+                                           i == cachedChunks.size() - 1,
+                                           cachedBlocked);
+            }
             return;
         }
     }
@@ -457,19 +428,28 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
         .then([this, conversationId, messageId](QJsonValue r) {
             const QJsonObject o = r.toObject();
             // The core returns RAW truth; we persist it raw and sanitize
-            // for display right here (same policy as the store path).
+            // for display via the shared streaming pipeline.
             const QString text = o.value(QStringLiteral("text")).toString();
             const QString rawHtml = o.value(QStringLiteral("html")).toString();
             persistMessage(conversationId, messageId, o, text);
-            QString safeHtml;
-            bool blocked = false;
-            if (!rawHtml.isEmpty()) {
-                const SanitizedBody s = HtmlSanitizer::sanitize(rawHtml);
-                safeHtml = s.html;
-                blocked = s.blockedRemote;
-            }
+
+            // Plain first…
             emit messageBodyReady(conversationId, messageId, text,
-                                  safeHtml, blocked);
+                                  QString(), false);
+            // …then the sanitized HTML streams in chunks.
+            if (!rawHtml.isEmpty()) {
+                const QStringList chunks =
+                    ContentPipeline::sanitizeStreamed(rawHtml);
+                // blocked flag rides the last chunk (we don't know it
+                // until the stream finishes).
+                const bool blocked = !chunks.isEmpty();
+                for (int i = 0; i < chunks.size(); ++i) {
+                    emit messageBodyChunkReady(conversationId, messageId,
+                                               chunks.at(i),
+                                               i == chunks.size() - 1,
+                                               blocked);
+                }
+            }
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));
@@ -551,39 +531,25 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     if (m_shuttingDown || m_key.isEmpty() || plainBody.isEmpty())
         return;
 
-    // Index + shard writes are serialized across workers.
-    QMutexLocker storeLock(&m_storeMutex);
-
     const QByteArray eml = buildEml(apiMsg.value(QStringLiteral("header")).toString(),
                                     plainBody,
                                     apiMsg.value(QStringLiteral("html")).toString());
-    const auto parsed = ContentPipeline::parse(eml);
-
-    MessageStore store(m_storeRoot, m_key);
-    const QString rel = store.put(eml, messageId);
-
-    Message m;
-    m.messageId = messageId;
-    m.conversationId = conversationId;
-    m.subject = parsed.subject;
-    m.sender = parsed.sender;
-    m.date = parsed.date;
-    m.isUnread = false;
-
-    MetadataIndex *idx = storeIndex();
-    if (!idx)
-        return;
-    idx->insertMessages({m}, {parsed.bodyPlain}, {rel}, {{}});
+    // One facade call: shard + index row + FTS — serialized inside.
+    m_store.storeMessage(conversationId, eml, plainBody);
 }
 
 void ProtonBackend::wipeLocalStore()
 {
+    // Drop the live index connection BEFORE removing the files
+    // (SQLite would keep writing to an unlinked inode otherwise).
+    m_store.clearKey();
     if (!m_storeRoot.isEmpty())
         QDir(m_storeRoot).removeRecursively();
     const QString storeDir = QFileInfo(m_indexDb).absolutePath();
     if (!storeDir.isEmpty())
         QDir(storeDir).removeRecursively();
     QDir().mkpath(m_storeRoot);
+    m_store.setKey(m_key);
 }
 
 void ProtonBackend::saveAttachment(const QString &messageId, int partIndex,

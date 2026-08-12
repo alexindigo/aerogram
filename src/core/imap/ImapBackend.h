@@ -21,6 +21,7 @@
 #include "CurlTransport.h"
 #include "core/store/MessageStore.h"
 #include "core/store/MetadataIndex.h"
+#include "core/store/EmailStore.h"
 #include "core/content/ContentPipeline.h"
 
 /// \brief IMAP backend prototype: libcurl transport + minimal MIME
@@ -84,11 +85,6 @@ public:
         if (m_pollTimer->isActive())
             m_pollTimer->stop();
         m_workers.waitForFinished();
-        {
-            QMutexLocker lock(&m_readIndexMutex);
-            delete m_readIndex;
-            m_readIndex = nullptr;
-        }
     }
 
     // -----------------------------------------------------------------
@@ -111,6 +107,7 @@ public:
         m_storageRoot = root + QStringLiteral("/storage");
         m_dbPath = root + QStringLiteral("/index.db");
         m_accountLabel = accountKey;
+        m_store.setPaths(m_dbPath, m_storageRoot);
 
         emit configured(true);
     }
@@ -121,6 +118,7 @@ public:
     void setMasterKey(const QByteArray &key)
     {
         m_key = key;
+        m_store.setKey(key);
     }
 
     /// \brief Rotation mode A helper: stop polling and delete this
@@ -208,12 +206,7 @@ public:
                 }, Qt::QueuedConnection);
                 return;
             }
-            QVector<Conversation> convs;
-            {
-                QMutexLocker lock(&m_readIndexMutex);
-                if (MetadataIndex *idx = readIndex())
-                    convs = idx->conversations();
-            }
+            const QVector<Conversation> convs = m_store.conversations();
             QMetaObject::invokeMethod(this, [this, convs]() {
                 emit conversationsReady(convs);
             }, Qt::QueuedConnection);
@@ -238,9 +231,7 @@ public:
                 return;
             }
             {
-                QMutexLocker lock(&m_readIndexMutex);
-                if (MetadataIndex *idx = readIndex())
-                    msgs = idx->messages(conversationId);
+                msgs = m_store.messages(conversationId);
             }
             QMetaObject::invokeMethod(this, [this, conversationId, msgs]() {
                 qInfo() << "ImapBackend: messagesReady" << conversationId << msgs.size() << "messages";
@@ -257,7 +248,7 @@ public:
         track(QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
             if (m_shuttingDown) return;
             QString body;
-            QString html;
+            QStringList chunks;
             bool blockedRemote = false;
             QString rel;
             if (key.isEmpty()) {
@@ -268,27 +259,27 @@ public:
                 return;
             }
             {
-                QMutexLocker lock(&m_readIndexMutex);
-                if (MetadataIndex *idx = readIndex())
-                    rel = idx->filePathForMessage(messageId);
-            }
-            if (!rel.isEmpty()) {
-                MessageStore store(storageRoot, key);
-                const QByteArray raw = store.get(rel);
-                qInfo() << "ImapBackend: body fetch" << messageId << "raw" << raw.size() << "bytes";
-                if (!raw.isEmpty()) {
-                    const auto parsed = ContentPipeline::parse(raw);
-                    body = parsed.bodyPlain;
-                    html = parsed.bodyHtmlSafe;
-                    blockedRemote = parsed.remoteContentBlocked;
+                const auto parts = m_store.readBodyStreamed(messageId);
+                if (parts.found) {
+                    body = parts.plain;
+                    chunks = parts.htmlChunks;
+                    blockedRemote = parts.blockedRemote;
                 }
-            } else {
-                qInfo() << "ImapBackend: body fetch" << messageId << "no file_path in index";
             }
-            QMetaObject::invokeMethod(this, [this, conversationId, messageId, body, html, blockedRemote]() {
+            qInfo() << "ImapBackend: body fetch" << messageId
+                    << (body.isEmpty() ? "miss" : "hit");
+            QMetaObject::invokeMethod(this, [this, conversationId, messageId, body, chunks, blockedRemote]() {
                 qInfo() << "ImapBackend: messageBodyReady" << messageId << body.size() << "chars";
+                // Plain first, then sanitized HTML chunks for
+                // progressive render (same as the Proton path).
                 emit messageBodyReady(conversationId, messageId, body,
-                                      html, blockedRemote);
+                                      QString(), blockedRemote);
+                for (int i = 0; i < chunks.size(); ++i) {
+                    emit messageBodyChunkReady(conversationId, messageId,
+                                               chunks.at(i),
+                                               i == chunks.size() - 1,
+                                               blockedRemote);
+                }
             }, Qt::QueuedConnection);
         }));
     }
@@ -314,14 +305,9 @@ public:
                 }, Qt::QueuedConnection);
                 return;
             }
-            {
-                QMutexLocker lock(&m_readIndexMutex);
-                if (MetadataIndex *idx = readIndex())
-                    rel = idx->filePathForMessage(messageId);
-            }
+            rel = m_store.filePathForMessage(messageId);
             if (!rel.isEmpty()) {
-                MessageStore store(storageRoot, key);
-                const QByteArray raw = store.get(rel);
+                const QByteArray raw = m_store.readShard(rel);
                 if (!raw.isEmpty()) {
                     const QByteArray bytes = ContentPipeline::extractAttachment(raw, partIndex);
                     if (!bytes.isEmpty()) {
@@ -362,8 +348,8 @@ private slots:
             if (m_shuttingDown) return;
             QString err;
             const QVector<Conversation> convs = syncWorker(host, port, user, pass, tls,
-                                                           storageRoot, dbPath, accountLabel,
-                                                           key, std::cref(m_shuttingDown), &err);
+                                                           m_store, accountLabel,
+                                                           std::cref(m_shuttingDown), &err);
             QMetaObject::invokeMethod(this, [this, convs, err]() {
                 m_syncInFlight = false;
                 if (!err.isEmpty()) {
@@ -389,10 +375,8 @@ private:
     /// \brief Blocking sync worker. Runs on a QThreadPool thread.
     static QVector<Conversation> syncWorker(const QString &host, int port,
                                             const QString &user, const QString &pass,
-                                            bool tls, const QString &storageRoot,
-                                            const QString &dbPath,
+                                            bool tls, EmailStore &store,
                                             const QString &accountLabel,
-                                            const QByteArray &key,
                                             const std::atomic<bool> &shuttingDown,
                                             QString *errOut)
     {
@@ -405,14 +389,6 @@ private:
             return {};
         }
 
-        MessageStore store(storageRoot, key);
-
-        {
-            MetadataIndex idx(dbPath, key);
-            if (!idx.open(&err)) {
-                if (errOut) *errOut = err;
-                return {};
-            }
 
             for (const QString &folder : folders) {
                 if (shuttingDown) break;          // checkpoint between folders
@@ -422,11 +398,11 @@ private:
 
                 QVector<Message> msgs;
                 QVector<QString> bodies;
-                QVector<QString> paths;
+                QVector<QByteArray> rawEmls;
                 QVector<QVector<AttachmentMeta>> atts;
                 msgs.reserve(uids.size());
                 bodies.reserve(uids.size());
-                paths.reserve(uids.size());
+                rawEmls.reserve(uids.size());
                 atts.reserve(uids.size());
 
                 qint64 newest = 0;
@@ -460,7 +436,7 @@ private:
 
                     msgs.append(m);
                     bodies.append(parsed.bodyPlain);
-                    paths.append(store.put(raw, m.messageId));
+                    rawEmls.append(raw);
                     atts.append(parsed.attachments);
                     presentIds.insert(m.messageId);
 
@@ -472,21 +448,11 @@ private:
                     }
                 }
 
-                idx.insertMessages(msgs, bodies, paths, atts);
-
-                // Deletion sync: the server's listing is the truth.
-                // Only reconcile a folder we listed COMPLETELY with no
-                // transient fetch failures — anything less would delete
-                // mail we merely failed to read this pass.
-                if (folderComplete && !fetchFailed) {
-                    const QVector<QString> gone =
-                        idx.removeMissingFromConversation(folder, presentIds);
-                    for (const QString &rel : gone)
-                        store.remove(rel);
-                    if (!gone.isEmpty())
-                        qInfo() << "ImapBackend: reconciled" << folder
-                                << "— removed" << gone.size() << "deleted message(s)";
-                }
+                // One locked call: shards + index rows + reconcile.
+                // Reconcile ONLY on a complete, error-free listing.
+                store.writeFolderSync(folder, msgs, bodies, rawEmls, atts,
+                                        presentIds,
+                                        folderComplete && !fetchFailed);
 
                 Conversation c;
                 c.id = folder;
@@ -498,11 +464,10 @@ private:
                 c.lastActivity = newest > 0
                                ? QDateTime::fromSecsSinceEpoch(newest)
                                : QDateTime::currentDateTime();
-                idx.upsertConversation(c);
+                store.upsertConversation(c);
             }
 
-            return idx.conversations();
-        }
+            return store.conversations();
     }
 
     QString m_host;
@@ -532,24 +497,10 @@ private:
     QFutureSynchronizer<void> m_workers;
     std::atomic<bool> m_shuttingDown{false};
     bool m_syncInFlight = false;
-    /// Shared read connection to the index — every MetadataIndex::open()
-    /// pays SQLCipher's KDF (~170ms), which taxed EVERY folder/body read.
-    /// Lazily opened under m_readIndexMutex; freed in shutdown().
-    class MetadataIndex *m_readIndex = nullptr;
-    QMutex m_readIndexMutex;
-    class MetadataIndex *readIndex()
-    {
-        if (!m_readIndex && !m_key.isEmpty()) {
-            m_readIndex = new MetadataIndex(m_dbPath, m_key);
-            QString err;
-            if (!m_readIndex->open(&err)) {
-                qWarning() << "ImapBackend: index open failed:" << err;
-                delete m_readIndex;
-                m_readIndex = nullptr;
-            }
-        }
-        return m_readIndex;
-    }
+    /// The per-account store facade (index + shards + pipeline read) —
+    /// shared with every email backend. Paths land at configure();
+    /// the key at setMasterKey().
+    EmailStore m_store;
 };
 
 #endif

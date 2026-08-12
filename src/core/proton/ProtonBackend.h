@@ -9,6 +9,8 @@
 #include <QJsonObject>
 #include <QMutex>
 
+#include "../store/EmailStore.h"
+
 #include <atomic>
 #include <thread>
 
@@ -68,7 +70,7 @@ public:
 
     // IMasterKeyAware — the local store (encrypted shards + FTS index)
     // is keyed by the vault master key, like IMAP.
-    void setMasterKey(const QByteArray &key) override { m_key = key; }
+    void setMasterKey(const QByteArray &key) override { m_key = key; m_store.setKey(key); }
     void wipeLocalStore() override;
 
 private:
@@ -84,15 +86,16 @@ private:
     QVariantMap m_credentials;
     QString m_dataDir;
 
-    // Local store (same format as IMAP: encrypted .eml shards + SQLCipher
-    // FTS index). Populated as bodies are fetched.
+    // Local store via the SHARED facade (EmailStore — identical for
+    // every email backend: encrypted .eml shards + SQLCipher FTS index).
     QByteArray m_key;
     QString m_storeRoot;   // <dataDir>/store/storage
     QString m_indexDb;     // <dataDir>/store/index.db
+    EmailStore m_store;
     QString m_inboxLocalId;         // INBOX's local label id (arrival persistence)
     bool m_didInitialInboxStore = false;
-    /// Persist a fetched message into the shared store + FTS index
-    /// (synthesizes a faithful .eml from the api message's header+body).
+    /// Persist a fetched message into the shared store (synthesizes a
+    /// faithful .eml from the api message's header+body).
     void persistMessage(const QString &conversationId, const QString &messageId,
                         const QJsonObject &apiMsg, const QString &plainBody);
 
@@ -106,17 +109,9 @@ private:
     // Worker lifetime discipline (mirrors ImapBackend): nothing
     // captures a live `this`/m_core past teardown. Workers check
     // m_shuttingDown at entry; shutdown() drains them before freeing
-    // the core. Index/store writes are serialized — concurrent
-    // writers flooded SQLite with "database is locked".
+    // the core. Store/index serialization lives inside EmailStore.
     std::atomic<bool> m_shuttingDown{false};
     QFutureSynchronizer<void> m_workers;
-    QMutex m_storeMutex;
-    /// Opened lazily under m_storeMutex once the master key exists.
-    /// One connection per backend: every open() pays SQLCipher's KDF
-    /// (~170ms) — per-operation opens were the hidden latency.
-    MetadataIndex *m_storeIndex = nullptr;
-    /// m_storeIndex accessor (lazy open); caller must hold m_storeMutex.
-    MetadataIndex *storeIndex();
 };
 
 #endif

@@ -54,6 +54,10 @@ public:
         bool blockedRemote = false;
     };
     static StreamedParts parseStreamed(const QByteArray &eml, int chunkCount = 4);
+
+    /// Sanitize a raw HTML string into display-ordered chunks (for
+    /// backends that deliver a bare body, not a full .eml).
+    static QStringList sanitizeStreamed(const QString &rawHtml, int chunkCount = 4);
 };
 
 #endif
