@@ -8,10 +8,14 @@ description = "Aerogram's shared email-HTML sanitizer: Proton's Transformer pipe
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+default = ["ffi"]
+ffi = ["serde_json"]
+
 [dependencies]
 lol_html = "3"
 html2text = "0.16"
-serde_json = "1"
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 # none

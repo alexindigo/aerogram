@@ -12,6 +12,10 @@ extern "C" {
 char *sanitize_html(const char *input);
 char *html_to_plain(const char *input);
 void sanitize_free_string(char *s);
+void *sanitize_stream_new();
+char *sanitize_stream_write(void *s, const char *chunk);
+char *sanitize_stream_finish(void *s);  // frees the stream
+void sanitize_stream_free(void *s);
 }
 
 struct SanitizedBody {

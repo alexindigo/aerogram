@@ -18,6 +18,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::rc::Rc;
 
 use lol_html::{doc_text, element, HtmlRewriter, Settings};
+#[cfg(feature = "ffi")]
 use serde_json::json;
 
 // ---------------------------------------------------------------------
@@ -207,8 +208,10 @@ pub fn to_plain_text(input: &str) -> String {
 }
 
 // ---------------------------------------------------------------------
-// C ABI (unchanged)
+// C ABI (built unless the `ffi` feature is off — proton-core uses the
+// Rust API and must not re-export these symbols into its staticlib)
 // ---------------------------------------------------------------------
+#[cfg(feature = "ffi")]
 fn cstr_arg<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, String> {
     if ptr.is_null() {
         return Err(format!("{what} is null"));
@@ -218,6 +221,7 @@ fn cstr_arg<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, String> {
         .map_err(|e| format!("{what} is not UTF-8: {e}"))
 }
 
+#[cfg(feature = "ffi")]
 fn into_c(value: serde_json::Value) -> *mut c_char {
     CString::new(value.to_string())
         .unwrap_or_else(|_| CString::new(r#"{"err":"nul byte"}"#).unwrap())
@@ -227,6 +231,7 @@ fn into_c(value: serde_json::Value) -> *mut c_char {
 /// Sanitize an HTML document for display. Returns a JSON string:
 /// `{"html": "...", "plain": "...", "blocked_remote": bool}`.
 /// # Safety: `input` must be a valid NUL-terminated UTF-8 C string.
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub unsafe extern "C" fn sanitize_html(input: *const c_char) -> *mut c_char {
     match cstr_arg(input, "input") {
@@ -240,6 +245,7 @@ pub unsafe extern "C" fn sanitize_html(input: *const c_char) -> *mut c_char {
 
 /// Plain-text-only transform. Returns a JSON string `{"plain": "..."}`.
 /// # Safety: `input` must be a valid NUL-terminated UTF-8 C string.
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub unsafe extern "C" fn html_to_plain(input: *const c_char) -> *mut c_char {
     match cstr_arg(input, "input") {
@@ -249,10 +255,76 @@ pub unsafe extern "C" fn html_to_plain(input: *const c_char) -> *mut c_char {
 }
 
 /// # Safety: frees a string returned by sanitize_html/html_to_plain.
+#[cfg(feature = "ffi")]
 #[no_mangle]
 pub unsafe extern "C" fn sanitize_free_string(s: *mut c_char) {
     if !s.is_null() {
         drop(CString::from_raw(s));
+    }
+}
+
+// ---------------------------------------------------------------------
+// Streaming C ABI — clean bytes flush as raw bytes arrive.
+// ---------------------------------------------------------------------
+
+/// Create a streaming sanitizer. Free with sanitize_stream_free (or
+/// finish, which frees).
+/// # Safety: the returned pointer must not be used after free/finish.
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub unsafe extern "C" fn sanitize_stream_new() -> *mut SanitizerStream {
+    Box::into_raw(Box::new(SanitizerStream::new()))
+}
+
+/// Feed a raw chunk; returns the newly flushed clean bytes as a JSON
+/// string `{"chunk": "..."}` (may be empty — lol-html buffers across
+/// tag boundaries).
+/// # Safety: `s` from sanitize_stream_new; `chunk` a valid C string.
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub unsafe extern "C" fn sanitize_stream_write(
+    s: *mut SanitizerStream,
+    chunk: *const c_char,
+) -> *mut c_char {
+    let Some(stream) = s.as_mut() else {
+        return into_c(json!({ "err": "stream is null" }));
+    };
+    let Ok(text) = cstr_arg(chunk, "chunk") else {
+        return into_c(json!({ "err": "chunk not UTF-8" }));
+    };
+    match stream.write(text.as_bytes()) {
+        Ok(fresh) => into_c(json!({ "chunk": String::from_utf8_lossy(&fresh) })),
+        Err(e) => into_c(json!({ "err": e })),
+    }
+}
+
+/// Finish the stream; returns `{"chunk": "...", "blocked_remote": bool}`
+/// and FREES the stream (do not use the pointer after).
+/// # Safety: `s` from sanitize_stream_new, not yet finished/freed.
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub unsafe extern "C" fn sanitize_stream_finish(s: *mut SanitizerStream) -> *mut c_char {
+    let Some(stream) = s.as_mut() else {
+        return into_c(json!({ "err": "stream is null" }));
+    };
+    let result = stream.finish();
+    drop(Box::from_raw(s));
+    match result {
+        Ok((rest, blocked)) => into_c(json!({
+            "chunk": String::from_utf8_lossy(&rest),
+            "blocked_remote": blocked,
+        })),
+        Err(e) => into_c(json!({ "err": e })),
+    }
+}
+
+/// Abort and free without finishing.
+/// # Safety: `s` from sanitize_stream_new, not yet finished.
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub unsafe extern "C" fn sanitize_stream_free(s: *mut SanitizerStream) {
+    if !s.is_null() {
+        drop(Box::from_raw(s));
     }
 }
 

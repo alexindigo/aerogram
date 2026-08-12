@@ -1,6 +1,8 @@
 #include "ContentPipeline.h"
 
 #include "HtmlSanitizer.h"
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <KMime/Message>
 #include <KMime/Content>
@@ -81,4 +83,50 @@ QByteArray ContentPipeline::extractAttachment(const QByteArray &eml, int index)
     if (index < 0 || index >= atts.size())
         return {};
     return atts.at(index)->decodedBody();
+}
+
+ContentPipeline::StreamedParts ContentPipeline::parseStreamed(const QByteArray &eml,
+                                                              int chunkCount)
+{
+    // Reuse the single-pass parse for metadata + plain.
+    StreamedParts out;
+    const ParsedContent p = parse(eml);
+    out.plain = p.bodyPlain;
+    out.blockedRemote = p.remoteContentBlocked;
+
+    if (p.bodyHtmlRaw.isEmpty())
+        return out;
+
+    // Stream the raw html through the sanitizer: lol-html flushes clean
+    // bytes as it parses, so each write returns a progress chunk.
+    // (stream FFI declared in HtmlSanitizer.h)
+    const QByteArray rawUtf8 = p.bodyHtmlRaw.toUtf8();
+    const int step = qMax(1, rawUtf8.size() / qMax(1, chunkCount));
+    void *stream = sanitize_stream_new();
+
+    QStringList flushed;
+    for (int i = 0; i < rawUtf8.size(); i += step) {
+        const QByteArray part = rawUtf8.mid(i, step);
+        char *raw = sanitize_stream_write(stream, part.constData());
+        const QJsonObject o =
+            QJsonDocument::fromJson(QString::fromUtf8(raw ? raw : "").toUtf8()).object();
+        if (raw)
+            sanitize_free_string(raw);
+        const QString chunk = o.value(QStringLiteral("chunk")).toString();
+        if (!chunk.isEmpty())
+            flushed.append(chunk);
+    }
+    char *raw = sanitize_stream_finish(stream);  // frees the stream
+    const QJsonObject o =
+        QJsonDocument::fromJson(QString::fromUtf8(raw ? raw : "").toUtf8()).object();
+    if (raw)
+        sanitize_free_string(raw);
+    out.blockedRemote = out.blockedRemote
+        || o.value(QStringLiteral("blocked_remote")).toBool();
+    const QString lastChunk = o.value(QStringLiteral("chunk")).toString();
+    if (!lastChunk.isEmpty())
+        flushed.append(lastChunk);
+
+    out.htmlChunks = flushed;
+    return out;
 }

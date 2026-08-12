@@ -43,6 +43,17 @@ public:
 
     /// Decode attachment `index`'s bytes (decode-on-save).
     static QByteArray extractAttachment(const QByteArray &eml, int index);
+
+    /// Progressive render support: sanitized HTML split into chunks in
+    /// document order (the pane appends them as they arrive — first
+    /// paint never waits for the whole doc). Chunk boundaries fall on
+    /// tag ends. Plain text is always returned whole.
+    struct StreamedParts {
+        QString plain;
+        QStringList htmlChunks;   // sanitized, in order
+        bool blockedRemote = false;
+    };
+    static StreamedParts parseStreamed(const QByteArray &eml, int chunkCount = 4);
 };
 
 #endif
