@@ -49,6 +49,12 @@ Kirigami.ApplicationWindow {
             item.attachmentSaveRequested.connect(function(mid, idx, path) {
                 accountController.saveAttachment(mid, idx, path)
             })
+            // Progressive render: sanitized body chunks append into the
+            // pane as they stream (never a whole-doc re-parse).
+            accountController.messageBodyChunkReady.connect(
+                function(convId, mid, chunk, lastChunk, blocked) {
+                    item.appendBodyChunk(mid, chunk, lastChunk, blocked)
+                })
         } else if (id === "chat-conversations") {
             item.chatSelected.connect(function(cid) {
                 accountController.fetchMessages(cid)

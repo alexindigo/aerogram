@@ -9,6 +9,7 @@
 
 #include "core/Types.h"
 #include "ui/QrCodeHelper.h"
+#include "ui/HtmlTextAppender.h"
 #include "core/crypto/MasterKeyManager.h"
 #include "core/plugin/BackendRegistry.h"
 #include "core/plugin/Capabilities.h"
@@ -225,6 +226,10 @@ int main(int argc, char *argv[])
     // QR decode helper (ZXing) — schema-driven "qr" fields use it for
     // camera/image scanning.
     engine.rootContext()->setContextProperty("qrCodeHelper", new QrCodeHelper(&engine));
+    // Progressive-render helper (chunk append into a TextEdit without
+    // re-parsing the document).
+    engine.rootContext()->setContextProperty("htmlTextAppender",
+                                             new HtmlTextAppender(&engine));
 
     const QUrl url(QStringLiteral("qrc:/Aerogram/ui/main.qml"));
     engine.load(url);

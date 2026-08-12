@@ -15,6 +15,17 @@ Item {
 
     signal attachmentSaveRequested(string messageId, int partIndex, string path)
 
+    /// Progressive render entry point (wired in main.qml to the
+    /// controller's messageBodyChunkReady). Appends a sanitized html
+    /// chunk into the open message's body — imperative, so no model
+    /// rebuild can wipe the stream.
+    function appendBodyChunk(messageId, chunk, lastChunk, blocked) {
+        // v1: one open message — the repeater's only delegate.
+        const d = messageRepeater.itemAt(0)
+        if (d && d.messageId === messageId)
+            d.appendChunk(chunk)
+    }
+
     Kirigami.PlaceholderMessage {
         anchors.centerIn: parent
         visible: accountController.activeMessages.length === 0
@@ -28,6 +39,7 @@ Item {
         visible: accountController.activeMessages.length > 0
 
         Repeater {
+            id: messageRepeater
             model: accountController.activeMessages
 
             delegate: ColumnLayout {
@@ -97,21 +109,38 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
 
+                    // Progressive render: plain text paints on
+                    // messageBodyReady; sanitized HTML chunks then append
+                    // via QTextCursor::insertHtml (never a whole-doc
+                    // re-parse). State is delegate-local.
+                    property string htmlAccum: ""
+                    property bool richMode: false
+
+                    function appendChunk(chunk) {
+                        htmlAccum += chunk
+                        if (!richMode) {
+                            richMode = true
+                            bodyEdit.textFormat = TextEdit.RichText
+                            bodyEdit.text = ""   // switch from plain
+                        }
+                        htmlTextAppender.appendHtml(bodyEdit, chunk)
+                    }
+
                     // Loader: body arrives async (decrypt + sanitize on a
                     // worker). Until then show a spinner, not a blank page.
                     property bool bodyLoaded: (modelData.body && modelData.body.length > 0)
-                                              || (modelData.bodyHtml && modelData.bodyHtml.length > 0)
+                                              || htmlAccum.length > 0
 
                     ScrollView {
                         anchors.fill: parent
                         clip: true
 
                         TextEdit {
+                            id: bodyEdit
                             width: bodyArea.width - 40
-                            textFormat: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
-                                        ? TextEdit.RichText : TextEdit.PlainText
-                            text: (modelData.bodyHtml && modelData.bodyHtml.length > 0)
-                                  ? modelData.bodyHtml : (modelData.body || "")
+                            textFormat: bodyArea.richMode ? TextEdit.RichText
+                                                          : TextEdit.PlainText
+                            text: modelData.body || ""
                             wrapMode: TextEdit.Wrap
                             readOnly: true
                             selectByMouse: true
