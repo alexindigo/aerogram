@@ -278,7 +278,7 @@ async fn dispatch(core: &ProtonCore, method: &str, params: Value) -> Result<Valu
         "submit_mailbox_password" => submit_mailbox_password(core, params).await,
         "restore_session" => restore_session(core).await,
         "account_info" => account_info(core).await,
-        "list_labels" => list_labels(core).await,
+        "list_labels" => list_labels(core, params).await,
         "list_messages" => list_messages(core, params).await,
         "message_body" => message_body(core, params).await,
         "get_attachment" => get_attachment(core, params).await,
@@ -512,24 +512,38 @@ async fn account_email(core: &ProtonCore, uctx: &Arc<UserCtx>) -> String {
 
 /// System labels with their REMOTE ids (Proton label ids are stable
 /// strings: "0"=INBOX etc.). Custom folders/labels come from the API.
-async fn list_labels(core: &ProtonCore) -> Result<Value, String> {
+async fn list_labels(core: &ProtonCore, params: Value) -> Result<Value, String> {
     let api = api(core).await?;
 
     // System labels are a fixed Proton set.
-    let mut out = vec![
-        json!({"id": "0", "name": "INBOX"}),
-        json!({"id": "8", "name": "Drafts"}),
-        json!({"id": "7", "name": "Sent"}),
-        json!({"id": "6", "name": "Archive"}),
-        json!({"id": "4", "name": "Spam"}),
-        json!({"id": "3", "name": "Trash"}),
-        json!({"id": "5", "name": "All Mail"}),
-    ];
+    let skip_system = params.get("label_type").and_then(Value::as_str) == Some("label");
+    let mut out = vec![];
+    if !skip_system {
+        out.append(&mut vec![
+            json!({"id": "0", "name": "INBOX"}),
+            json!({"id": "8", "name": "Drafts"}),
+            json!({"id": "7", "name": "Sent"}),
+            json!({"id": "6", "name": "Archive"}),
+            json!({"id": "4", "name": "Spam"}),
+            json!({"id": "3", "name": "Trash"}),
+            json!({"id": "5", "name": "All Mail"}),
+        ]);
+    }
 
     // Custom folders/labels from the API (LabelType::Folder=2 / Label=1 —
     // resolved at compile time; the call is what matters).
+    let label_type = match params
+        .get("label_type")
+        .and_then(Value::as_str)
+        .unwrap_or("folder")
+    {
+        // LabelType::Label = 1, Folder = 2, Folder/MailGroup distinction
+        // matters for what the API returns.
+        "label" => proton_core_api::services::proton::LabelType::Label,
+        _ => proton_core_api::services::proton::LabelType::Folder,
+    };
     let labels = api
-        .get_labels(proton_core_api::services::proton::LabelType::Folder)
+        .get_labels(label_type)
         .await
         .map_err(|e| format!("get_labels: {e:?}"))?;
     for l in labels.labels {
@@ -592,6 +606,8 @@ async fn list_messages(core: &ProtonCore, params: Value) -> Result<Value, String
             "time": m.time,
             "unread": m.unread,
             "attachments": m.num_attachments,
+            "labels": m.label_ids.iter().map(|l| l.as_str().to_owned())
+                .collect::<Vec<_>>(),
         }));
     }
     Ok(json!({ "messages": out, "total": total }))
