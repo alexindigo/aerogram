@@ -470,6 +470,58 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
 ///        uses, so Proton mail is searchable and offline-readable.
 ///        Runs on the calling (FFI worker) thread; store/index are
 ///        self-contained per-account.
+/// \brief Assemble the COMPLETE faithful .eml: original header block
+///        (real Content-Type provenance kept; Content-* regenerated for
+///        the container) + verbatim body + each attachment embedded as
+///        a MIME part (bridge parity — what Bridge serves over IMAP).
+static QByteArray assembleCompleteEml(const QString &rawHeader,
+                                      const QString &plainBody,
+                                      const QString &htmlBody,
+                                      const QVector<AttachmentMeta> &atts,
+                                      const QVector<QByteArray> &blobs)
+{
+    QByteArray out = rawHeader.toUtf8();
+    if (!out.endsWith("\n"))
+        out += "\r\n";
+
+    const QByteArray boundary = "aerogram-" + QByteArray::number(
+        qHash(rawHeader + plainBody + htmlBody), 36);
+    const QString bodyCt = htmlBody.isEmpty()
+        ? QStringLiteral("text/plain") : QStringLiteral("text/html");
+    const QByteArray bodyBytes =
+        (htmlBody.isEmpty() ? plainBody : htmlBody).toUtf8();
+
+    if (atts.isEmpty()) {
+        // No attachments: the body rides the original headers as-is.
+        out += "\r\n";
+        out += bodyBytes;
+        out += "\r\n";
+        return out;
+    }
+
+    // Replace the content description with multipart/mixed and embed.
+    out += "\r\nMIME-Version: 1.0\r\n";
+    out += "Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n";
+
+    out += "--" + boundary + "\r\n";
+    out += "Content-Type: " + bodyCt.toUtf8() + "; charset=utf-8\r\n";
+    out += "Content-Transfer-Encoding: base64\r\n\r\n";
+    out += bodyBytes.toBase64() + "\r\n";
+
+    for (int i = 0; i < atts.size(); ++i) {
+        const AttachmentMeta &a = atts.at(i);
+        out += "--" + boundary + "\r\n";
+        out += "Content-Type: " + a.mimeType.toUtf8()
+             + "; name=\"" + a.filename.toUtf8() + "\"\r\n";
+        out += "Content-Disposition: attachment; filename=\""
+             + a.filename.toUtf8() + "\"\r\n";
+        out += "Content-Transfer-Encoding: base64\r\n\r\n";
+        out += blobs.value(i).toBase64() + "\r\n";
+    }
+    out += "--" + boundary + "--\r\n";
+    return out;
+}
+
 void ProtonBackend::persistMessage(const QString &conversationId,
                                    const QString &messageId,
                                    const QJsonObject &apiMsg,
@@ -478,20 +530,61 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     if (m_shuttingDown || m_key.isEmpty() || plainBody.isEmpty())
         return;
 
-    // Faithful original .eml: the message's REAL header block (the SDK's
-    // headers describe the plaintext content, not the encryption
-    // wrapper) + the decrypted body VERBATIM. No synthesis — we store
-    // the message as it was written, DKIM/Received/provenance intact.
-    // (Attachments are separate encrypted blobs in Proton — they stay
-    // on the SDK's saveAttachment path for now.)
-    QByteArray eml = apiMsg.value(QStringLiteral("header")).toString().toUtf8();
-    if (!eml.endsWith("\n"))
-        eml += "\r\n";
-    eml += "\r\n";
+    const QJsonArray atts = apiMsg.value(QStringLiteral("attachments")).toArray();
     const QString html = apiMsg.value(QStringLiteral("html")).toString();
-    eml += (html.isEmpty() ? plainBody : html).toUtf8();
 
-    m_store.storeMessage(conversationId, eml, plainBody);
+    if (atts.isEmpty()) {
+        const QByteArray eml = assembleCompleteEml(
+            apiMsg.value(QStringLiteral("header")).toString(), plainBody, html, {}, {});
+        m_store.storeMessage(conversationId, eml, plainBody, {});
+        // Ours is the durable copy — drop the SDK's cached body so we
+        // don't keep two on disk.
+        call(QStringLiteral("drop_cached_body"),
+             {{QStringLiteral("id"), messageId.toLongLong()}})
+            .then([](QJsonValue) {})  // (chain-end rule: value step before void onFailed)
+            .onFailed([](const std::exception &) {});  // best-effort
+        return;
+    }
+
+    // Attachments: fetch+decrypt each (bounded), then store complete.
+    QList<QFuture<QJsonValue>> fetches;
+    QVector<AttachmentMeta> metas;
+    for (const auto &v : atts) {
+        const QJsonObject o = v.toObject();
+        AttachmentMeta meta;
+        meta.index = metas.size();
+        meta.filename = o.value(QStringLiteral("name")).toString();
+        meta.mimeType = o.value(QStringLiteral("mime")).toString();
+        meta.size = o.value(QStringLiteral("size")).toInteger();
+        metas.append(meta);
+        fetches.append(call(QStringLiteral("get_attachment"),
+                            {{QStringLiteral("id"), o.value(QStringLiteral("id")).toInteger()}}));
+    }
+
+    QtFuture::whenAll(fetches.begin(), fetches.end())
+        .then([this, conversationId, messageId, apiMsg, plainBody, html, metas](
+                  QList<QFuture<QJsonValue>> results) {
+            if (m_shuttingDown)
+                return;
+            QVector<QByteArray> blobs;
+            blobs.reserve(results.size());
+            for (auto &f : results) {
+                const QString b64 =
+                    f.result().toObject().value(QStringLiteral("bytes_base64")).toString();
+                blobs.append(QByteArray::fromBase64(b64.toLatin1()));
+            }
+            const QByteArray eml = assembleCompleteEml(
+                apiMsg.value(QStringLiteral("header")).toString(), plainBody, html,
+                metas, blobs);
+            m_store.storeMessage(conversationId, eml, plainBody, metas);
+            call(QStringLiteral("drop_cached_body"),
+                 {{QStringLiteral("id"), messageId.toLongLong()}})
+                .then([](QJsonValue) {})
+                .onFailed([](const std::exception &) {});
+        })
+        .onFailed([this](const std::exception &e) {
+            emit errorOccurred(QString::fromUtf8(e.what()));
+        });
 }
 
 void ProtonBackend::wipeLocalStore()
@@ -511,9 +604,21 @@ void ProtonBackend::wipeLocalStore()
 void ProtonBackend::saveAttachment(const QString &messageId, int partIndex,
                                    const QString &destinationPath)
 {
-    // Attachment blobs are a separate SDK call (get_attachment); not
-    // wired in the prototype round. Fail honestly.
-    Q_UNUSED(partIndex);
-    Q_UNUSED(destinationPath);
+    // Attachments are embedded in the stored .eml (complete message) —
+    // decode-on-save from the store, same as IMAP. Falls back to the
+    // SDK only when the message isn't stored yet.
+    const QString rel = m_store.filePathForMessage(messageId);
+    const QByteArray raw = rel.isEmpty() ? QByteArray()
+                                         : m_store.readShard(rel);
+    if (!raw.isEmpty()) {
+        const QByteArray bytes = ContentPipeline::extractAttachment(raw, partIndex);
+        if (!bytes.isEmpty()) {
+            QFile out(destinationPath);
+            const bool ok = out.open(QIODevice::WriteOnly)
+                         && out.write(bytes) == bytes.size();
+            emit attachmentSaved(ok, messageId, ok ? destinationPath : QString());
+            return;
+        }
+    }
     emit attachmentSaved(false, messageId, QString());
 }

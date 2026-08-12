@@ -365,6 +365,8 @@ async fn dispatch(core: &ProtonCore, method: &str, params: Value) -> Result<Valu
         "list_labels" => list_labels(core).await,
         "list_messages" => list_messages(core, params).await,
         "message_body" => message_body(core, params).await,
+        "get_attachment" => get_attachment(core, params).await,
+        "drop_cached_body" => drop_cached_body(core, params).await,
         "wait_event" => wait_event(core, params).await,
         _ => Err(format!("unknown method: {method}")),
     }
@@ -678,6 +680,22 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         (body.body.clone(), String::new(), false)
     };
 
+    // ALL attachments ride along (inline included — a faithful message
+    // embeds them too; bridge does the same via multipart/related).
+    let attachments: Vec<Value> = body
+        .metadata
+        .attachments
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.local_id.map(|id| id.as_u64()),
+                "name": a.filename,
+                "mime": a.mime_type.to_string(),
+                "size": a.size,
+            })
+        })
+        .collect();
+
     Ok(json!({
         "text": text,
         "html": html,
@@ -686,7 +704,84 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
         // Raw RFC822 header block — used to persist the message as a
         // faithful .eml in the shared store (same format as IMAP).
         "header": body.metadata.header,
+        "attachments": attachments,
     }))
+}
+
+/// Fetch + decrypt an attachment's content (bytes, base64 in JSON).
+/// `id` is the LOCAL attachment id (from message_body's attachments).
+async fn get_attachment(core: &ProtonCore, params: Value) -> Result<Value, String> {
+    let local = params
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or("missing attachment id")?;
+    let ctx = user_ctx(core).await?;
+
+    let local_id = proton_mail_common::datatypes::LocalAttachmentId::from(local);
+    let stash = ctx.user_stash();
+    let tether = stash
+        .connection()
+        .await
+        .map_err(|e| format!("db connection: {e:?}"))?;
+
+    let att_type = proton_mail_common::models::Attachment::local_id_counterpart(
+        local_id, &tether)
+        .await
+        .map_err(|e| format!("attachment lookup: {e:?}"))?
+        .ok_or("attachment not found locally")?;
+
+    let remote_id = match att_type {
+        proton_mail_common::models::AttachmentType::Remote(Some(id)) => id,
+        other => return Err(format!("attachment has no remote id: {other:?}")),
+    };
+
+    let bytes = proton_mail_common::models::Attachment::fetch_content(
+        remote_id, ctx.session())
+        .await
+        .map_err(|e| format!("get_attachment: {e:?}"))?;
+
+    Ok(json!({
+        "bytes_base64": base64_encode(&bytes),
+    }))
+}
+
+/// Drop the SDK's cached decrypted body for a message — called after
+/// the app has persisted the message into ITS store, so we don't keep
+/// two copies on disk (ours is the durable one).
+async fn drop_cached_body(core: &ProtonCore, params: Value) -> Result<Value, String> {
+    let id = params
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or("missing id")?;
+    let ctx = user_ctx(core).await?;
+    let local_id = LocalMessageId::from(id);
+    let stash = ctx.user_stash();
+    let mut tether = stash
+        .connection()
+        .await
+        .map_err(|e| format!("db connection: {e:?}"))?;
+    tether
+        .tx(async |tx| {
+            proton_mail_common::models::RawMessageBody::delete(local_id, tx).await
+        })
+        .await
+        .map_err(|e| format!("drop_cached_body: {e:?}"))?;
+    Ok(json!({ "dropped": true }))
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let mut n = (chunk[0] as u32) << 16;
+        if chunk.len() > 1 { n |= (chunk[1] as u32) << 8; }
+        if chunk.len() > 2 { n |= chunk[2] as u32; }
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 /// Long-poll: block until at least one watcher tick exists or the
