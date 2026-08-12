@@ -144,12 +144,16 @@ void EmailStore::storeMessage(const QString &conversationId, const QByteArray &e
     m.isUnread = false;
 
     const qint64 tFts = QDateTime::currentMSecsSinceEpoch();
-    if (auto *idx = index())
+    if (auto *idx = index()) {
         idx->insertMessages({m}, {plainBody}, {rel}, {attachments});
-    qInfo().noquote() << QStringLiteral("PERF store-fts msg=%1 dur=%2 plain_len=%3")
-                             .arg(keyHint)
-                             .arg(QDateTime::currentMSecsSinceEpoch() - tFts)
-                             .arg(plainBody.size());
+        qInfo().noquote() << QStringLiteral("PERF store-fts msg=%1 dur=%2 plain_len=%3")
+                                 .arg(keyHint)
+                                 .arg(QDateTime::currentMSecsSinceEpoch() - tFts)
+                                 .arg(plainBody.size());
+    } else {
+        qWarning().noquote() << QStringLiteral("PERF store-fts msg=%1 SKIPPED (no index — shard is orphaned)")
+                                    .arg(keyHint);
+    }
 }
 
 void EmailStore::writeFolderSync(const QString &folder,

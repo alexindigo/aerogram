@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QDebug>
 #include <QString>
 
 /// \brief Hash-sharded encrypted message storage (.enc files).
@@ -111,6 +112,11 @@ public:
                 ctLen,
                 reinterpret_cast<const unsigned char *>(blob.constData()),
                 reinterpret_cast<const unsigned char *>(m_key.constData())) != 0) {
+            // Auth failure = corrupt (or wrong-key) ciphertext. A cache
+            // must self-heal: drop the shard so the next put() rewrites
+            // it — dedup-by-path would otherwise keep it forever.
+            qWarning() << "MessageStore: auth failed, dropping shard" << rel;
+            QFile::remove(m_root + QLatin1Char('/') + rel);
             return {};
         }
         return plain;
