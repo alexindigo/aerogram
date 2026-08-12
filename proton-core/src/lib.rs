@@ -680,8 +680,74 @@ async fn message_body(core: &ProtonCore, params: Value) -> Result<Value, String>
 }
 
 async fn get_attachment(core: &ProtonCore, params: Value) -> Result<Value, String> {
-    let _ = (core, params);
-    Err("get_attachment: not yet wired on the lean core (next commit)".into())
+    let id = params
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("missing attachment id")?
+        .to_owned();
+    let api = api(core).await?;
+    let uctx = user_ctx(core).await?;
+
+    // Lean core: attachment ids are REMOTE ids (no stash-local ids).
+    let remote_id =
+        proton_mail_api::services::proton::common::AttachmentId::from(id.clone());
+
+    // Metadata (key packets + signatures) then the encrypted bytes.
+    let meta = api
+        .get_attachment_metadata(remote_id.clone())
+        .await
+        .map_err(|e| format!("get_attachment_metadata: {e:?}"))?;
+    let bytes = api
+        .get_attachment(remote_id)
+        .await
+        .map_err(|e| format!("get_attachment: {e:?}"))?;
+
+    // Decrypt with the attachment's message address keyring.
+    let pgp = proton_crypto::new_pgp_provider();
+    let tether = uctx
+        .stash()
+        .connection()
+        .await
+        .map_err(|e| format!("stash connection: {e:?}"))?;
+    let keys = uctx
+        .unlocked_address_keys(&pgp, &tether, &api, &meta.attachment.address_id)
+        .await
+        .map_err(|e| format!("unlock address keys: {e:?}"))?;
+
+    // The API's attachment fields ARE the crypto-inbox types (re-exported),
+    // so our wrapper holds them directly (their trait, our type).
+    use proton_crypto_inbox::attachment::{
+        AttachmentEncryptedSignature, AttachmentSignature, DecryptableAttachment, KeyPackets,
+    };
+    struct LeanAttachment {
+        key_packets: KeyPackets,
+        signature: Option<AttachmentSignature>,
+        enc_signature: Option<AttachmentEncryptedSignature>,
+    }
+    impl DecryptableAttachment for LeanAttachment {
+        fn attachment_key_packets(&self) -> &KeyPackets {
+            &self.key_packets
+        }
+        fn attachment_signature(&self) -> Option<&AttachmentSignature> {
+            self.signature.as_ref()
+        }
+        fn attachment_encrypted_signature(&self) -> Option<&AttachmentEncryptedSignature> {
+            self.enc_signature.as_ref()
+        }
+    }
+    let lean = LeanAttachment {
+        key_packets: meta.attachment.key_packets,
+        signature: meta.attachment.signature,
+        enc_signature: meta.attachment.enc_signature,
+    };
+    let decrypted = lean
+        .decrypt(&pgp, &keys, &keys, &bytes)
+        .map_err(|e| format!("attachment decrypt: {e:?}"))?;
+
+    Ok(json!({
+        "bytes_base64": base64_encode(decrypted.as_bytes()),
+        "name": meta.attachment.name,
+    }))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
