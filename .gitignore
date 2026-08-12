@@ -23,3 +23,6 @@ CMakeUserPresets.json
 
 # Rust build artifacts (proton-core staticlib + dep tree — very large)
 proton-core/target/
+
+# sanitizer crate build artifacts
+html-sanitize-core/target/

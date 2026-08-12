@@ -9,7 +9,8 @@ description = "Aerogram's shared email-HTML sanitizer: Proton's Transformer pipe
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-proton-mail-html-transformer = { git = "https://github.com/ProtonMail/rust-mail", rev = "3b6d35b766c10d91b1ffa68e1c5ee47ffca2a67e" }
+lol_html = "3"
+html2text = "0.16"
 serde_json = "1"
 
 [dev-dependencies]

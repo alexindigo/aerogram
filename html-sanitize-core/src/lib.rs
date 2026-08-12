@@ -1,84 +1,213 @@
 //! aerogram-html-sanitize: the ONE email-HTML sanitizer for Aerogram.
 //!
-//! Wraps Proton's battle-tested `Transformer` pipeline
-//! (proton-mail-html-transformer) as a standalone library — no account
-//! machinery, no Proton coupling. Used by the C++ app via the C ABI and
-//! by proton-core as a normal Rust dependency (rlib).
+//! Engine: lol-html (Cloudflare's streaming rewriter) — clean bytes
+//! flow out as raw bytes arrive. Used by the C++ app via the C ABI,
+//! by proton-core as a Rust dependency, and (via SanitizerStream) by
+//! the content pipeline for progressive rendering.
 //!
-//! Pipeline: whitelist-strip (scripts/forms/dangerous attrs) →
-//! noreferrer links → disable remote + embedded content (tracking
-//! pixels, cid:/data: images a text engine can't resolve) →
-//! text-engine cleanup (dead <img> tags, zero-width padding).
+//! Policy: remove script/form/iframe/object/embed/link/meta/base
+//! elements; strip on* event attributes and javascript: URLs; links
+//! get noreferrer/noopener + target=_blank; utm_*/tracker params are
+//! stripped from link hrefs; all <img> are removed (remote + embedded
+//! content disabled — tracking pixels, cid:/data: images a text engine
+//! can't resolve); zero-width marketing padding is stripped from text
+//! (ZWJ/FE0F kept: emoji need them).
 
+use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
+use std::rc::Rc;
 
-use proton_mail_html_transformer::sanitizer::StripStyleSheets;
-use proton_mail_html_transformer::{Html2TextOptions, Transformer};
+use lol_html::{doc_text, element, HtmlRewriter, Settings};
 use serde_json::json;
 
-/// The shared "safe for Qt's text engine" transform, Rust-callable.
+// ---------------------------------------------------------------------
+// The streaming core
+// ---------------------------------------------------------------------
+
+/// Sink type for the rewriter: an owned boxed closure (OutputSink is
+/// implemented for FnMut(&[u8])). Local (non-Send) handlers are fine —
+/// a stream lives on one worker thread.
+type Rewriter = HtmlRewriter<'static, Box<dyn FnMut(&[u8])>>;
+
+/// Streaming sanitizer state. Feed chunks with `write()` (returns the
+/// newly flushed clean bytes), `finish()` at EOF.
+pub struct SanitizerStream {
+    rewriter: Option<Rewriter>,  // Option because end() consumes it
+    out: Rc<RefCell<Vec<u8>>>,
+    out_read: usize,
+    blocked: Rc<RefCell<bool>>,
+}
+
+fn build_rewriter(
+    out: Rc<RefCell<Vec<u8>>>,
+    blocked: Rc<RefCell<bool>>,
+) -> Rewriter {
+    let blocked_img = blocked.clone();
+    HtmlRewriter::new(
+        Settings::new()
+            .with_strict(false)
+            // Dangerous / structural elements gone entirely.
+            .append_element_content_handler(element!(
+                "script, form, iframe, object, embed, link, meta, base",
+                |el| {
+                    el.remove();
+                    Ok(())
+                }
+            ))
+            // No images (remote + embedded disabled); flag when the src
+            // was remote/data — the UI shows "remote content blocked".
+            .append_element_content_handler(element!("img", move |el| {
+                let src = el.get_attribute("src").unwrap_or_default();
+                if src.starts_with("http") || src.starts_with("data:") {
+                    *blocked_img.borrow_mut() = true;
+                }
+                el.remove();
+                Ok(())
+            }))
+            // Links: noreferrer + new window; strip tracker params.
+            .append_element_content_handler(element!("a", |el| {
+                el.set_attribute("rel", "noreferrer noopener")?;
+                el.set_attribute("target", "_blank")?;
+                if let Some(href) = el.get_attribute("href") {
+                    if let Some(clean) = clean_link(&href) {
+                        el.set_attribute("href", &clean)?;
+                    }
+                }
+                Ok(())
+            }))
+            // Event handlers + javascript: URLs gone everywhere.
+            .append_element_content_handler(element!("*", |el| {
+                // Collect first (attributes() borrows immutably; removal
+                // borrows mutably — never both at once).
+                let bad: Vec<String> = el.attributes().iter()
+                    .filter(|a| {
+                        let name = a.name();
+                        name.starts_with("on")
+                            || (name == "href" || name == "src")
+                                && a.value().trim_start().starts_with("javascript:")
+                    })
+                    .map(|a| a.name())
+                    .collect();
+                for name in bad {
+                    el.remove_attribute(&name);
+                }
+                Ok(())
+            }))
+            // Zero-width marketing padding stripped from ALL text nodes
+            // (ZWJ U+200D and FE0F kept — emoji need them). Per-chunk
+            // filter: the chars are self-contained, chunking is safe.
+            // doc_text! is document-level (text!("*") misses text not
+            // wrapped in an element).
+            .append_document_content_handler(doc_text!(|t| {
+                let s = t.as_str();
+                if s.contains(['\u{200B}', '\u{200C}', '\u{034F}', '\u{2060}', '\u{FEFF}']) {
+                    let filtered: String = s.chars()
+                        .filter(|c| !matches!(c,
+                            '\u{200B}' | '\u{200C}' | '\u{034F}' | '\u{2060}' | '\u{FEFF}'))
+                        .collect();
+                    t.set_str(filtered);
+                }
+                Ok(())
+            })),
+        {
+            let out = out.clone();
+            Box::new(move |chunk: &[u8]| out.borrow_mut().extend_from_slice(chunk))
+                as Box<dyn FnMut(&[u8])>
+        },
+    )
+}
+
+impl SanitizerStream {
+    pub fn new() -> Self {
+        let out = Rc::new(RefCell::new(Vec::new()));
+        let blocked = Rc::new(RefCell::new(false));
+        let rewriter = build_rewriter(out.clone(), blocked.clone());
+        Self { rewriter: Some(rewriter), out, out_read: 0, blocked }
+    }
+
+    /// Feed raw bytes; returns the clean bytes flushed since the last
+    /// call (lol-html emits as it parses — this is the stream).
+    pub fn write(&mut self, chunk: &[u8]) -> Result<Vec<u8>, String> {
+        self.rewriter
+            .as_mut()
+            .ok_or("write after finish")?
+            .write(chunk)
+            .map_err(|e| format!("sanitize stream write: {e:?}"))?;
+        let out = self.out.borrow();
+        let fresh = out[self.out_read..].to_vec();
+        self.out_read = out.len();
+        Ok(fresh)
+    }
+
+    /// Finish; returns remaining clean bytes + the blocked flag.
+    pub fn finish(&mut self) -> Result<(Vec<u8>, bool), String> {
+        self.rewriter
+            .take()
+            .ok_or("finish called twice")?
+            .end()
+            .map_err(|e| format!("sanitize stream end: {e:?}"))?;
+        let out = self.out.borrow();
+        let rest = out[self.out_read..].to_vec();
+        self.out_read = out.len();
+        Ok((rest, *self.blocked.borrow()))
+    }
+}
+
+/// Strip tracker query params (utm_*, fbclid, gclid, …) from a link
+/// target. Returns None when the link needs no change.
+fn clean_link(href: &str) -> Option<String> {
+    const TRACKERS: &[&str] = &[
+        "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid", "igshid", "ref",
+    ];
+    let q = href.find('?')?;
+    let (base, query) = href.split_at(q);
+    let kept: Vec<&str> = query[1..]
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split('=').next().unwrap_or("");
+            let lk = key.to_ascii_lowercase();
+            !lk.starts_with("utm_") && !TRACKERS.contains(&lk.as_str())
+        })
+        .collect();
+    if kept.len() == query[1..].split('&').count() {
+        return None; // nothing stripped
+    }
+    if kept.is_empty() {
+        return Some(base.to_string());
+    }
+    Some(format!("{}?{}", base, kept.join("&")))
+}
+
+// ---------------------------------------------------------------------
+// One-shot API (unchanged surface)
+// ---------------------------------------------------------------------
+
+/// The shared "safe for Qt's text engine" transform.
 /// Returns (sanitized_html, plain_text, blocked_remote_content).
 pub fn sanitize_for_display(input: &str) -> (String, String, bool) {
-    let mut t = Transformer::new(input);
-    t.add_noreferrer();
-    t.strip_whitelist(StripStyleSheets::No);
-    let out = t.disable_content(true, true);
-    let blocked = !out.remote_urls.is_empty() || !out.embedded_urls.is_empty();
+    let mut stream = SanitizerStream::new();
+    let mut html = match stream.write(input.as_bytes()) {
+        Ok(c) => c,
+        Err(_) => Vec::new(),
+    };
+    let (mut rest, blocked) = stream.finish().unwrap_or((Vec::new(), false));
+    html.append(&mut rest);
+    let html = String::from_utf8_lossy(&html).into_owned();
 
-    let html = clean_for_text_engine(&t.to_string());
-    let plain = Transformer::html2text(
-        std::io::Cursor::new(input.as_bytes()),
-        Html2TextOptions { decorate_links: true, decorate_images: false },
-    )
-    .unwrap_or_else(|_| input.to_string());
+    let plain = html2text::from_read(input.as_bytes(), 80)
+        .unwrap_or_else(|_| input.to_string());
 
     (html, plain, blocked)
 }
 
 /// Just the plain-text transform (no sanitize pass needed for text).
 pub fn to_plain_text(input: &str) -> String {
-    Transformer::html2text(
-        std::io::Cursor::new(input.as_bytes()),
-        Html2TextOptions { decorate_links: true, decorate_images: false },
-    )
-    .unwrap_or_else(|_| input.to_string())
-}
-
-/// Post-sanitize cleanup for Qt's text engine (QTextDocument renders a
-/// safe HTML4 subset). Removes:
-///
-/// 1. Dead `<img>` tags — content-disabling neuters their src but the
-///    tag survives, and Qt renders it as a ￼ placeholder box.
-/// 2. Zero-width marketing padding (ZWSP/ZWNJ/CGJ/WJ/BOM) — preview-text
-///    hacks that show up as stray marks. ZWJ (U+200D) is KEPT: emoji
-///    sequences need it.
-pub fn clean_for_text_engine(html: &str) -> String {
-    let mut out = html.to_string();
-
-    let lower = out.to_lowercase();
-    let mut result = String::with_capacity(out.len());
-    let mut rest = 0usize;
-    while let Some(pos) = lower[rest..].find("<img") {
-        let abs = rest + pos;
-        if let Some(end) = out[abs..].find('>') {
-            result.push_str(&out[rest..abs]);
-            rest = abs + end + 1;
-        } else {
-            break;
-        }
-    }
-    result.push_str(&out[rest..]);
-    out = result;
-
-    out.retain(|c| {
-        !matches!(c, '\u{200B}' | '\u{200C}' | '\u{034F}' | '\u{2060}' | '\u{FEFF}')
-    });
-
-    out
+    html2text::from_read(input.as_bytes(), 80)
+        .unwrap_or_else(|_| input.to_string())
 }
 
 // ---------------------------------------------------------------------
-// C ABI
+// C ABI (unchanged)
 // ---------------------------------------------------------------------
 fn cstr_arg<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, String> {
     if ptr.is_null() {
@@ -167,5 +296,34 @@ mod tests {
             sanitize_for_display("<p>Hello <b>world</b></p><p>line two</p>");
         assert!(plain.contains("Hello world"));
         assert!(plain.contains("line two"));
+    }
+
+    #[test]
+    fn tracker_params_stripped_from_links() {
+        let (html, _, _) = sanitize_for_display(
+            r#"<a href="https://example.com/page?utm_source=nl&id=42&fbclid=x">x</a>"#,
+        );
+        assert!(html.contains("id=42"), "real param lost: {html}");
+        assert!(!html.contains("utm_source"), "utm param survived: {html}");
+        assert!(!html.contains("fbclid"), "fbclid survived: {html}");
+    }
+
+    #[test]
+    fn streaming_matches_one_shot() {
+        let dirty = r#"<p>Hello <b>world</b></p><script>x()</script><p>tail</p>"#;
+        let (one_shot, _, _) = sanitize_for_display(dirty);
+
+        let mut stream = SanitizerStream::new();
+        let mut collected = Vec::new();
+        for chunk in dirty.as_bytes().chunks(7) {  // awkward size on purpose
+            collected.extend(stream.write(chunk).unwrap());
+        }
+        let (rest, _) = stream.finish().unwrap();
+        collected.extend(rest);
+        let streamed = String::from_utf8_lossy(&collected).into_owned();
+
+        assert_eq!(one_shot, streamed);
+        assert!(streamed.contains("Hello"));
+        assert!(!streamed.contains("<script"));
     }
 }
