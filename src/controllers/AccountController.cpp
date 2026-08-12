@@ -446,7 +446,7 @@ void AccountController::connectBackend(const Account &account)
     connect(backend, &BackendPlugin::messageBodyReady, this,
             [this, accountId](const QString &localConvId, const QString &messageId,
                               const QString &body, const QString &bodyHtml,
-                              bool remoteContentBlocked) {
+                              bool remoteContentBlocked, bool hasHtml) {
                 if (messageId == m_activeMessageId) {
                     // Update the entry's body in the active list.
                     QVariantList msgs = m_activeMessages;
@@ -456,6 +456,7 @@ void AccountController::connectBackend(const Account &account)
                             e[QStringLiteral("body")] = body;
                             e[QStringLiteral("bodyHtml")] = bodyHtml;
                             e[QStringLiteral("remoteContentBlocked")] = remoteContentBlocked;
+                            e[QStringLiteral("hasHtml")] = hasHtml;
                             msgs[i] = e;
                             setActiveMessages(msgs);
                             break;
@@ -463,7 +464,8 @@ void AccountController::connectBackend(const Account &account)
                     }
                 }
                 emit messageBodyReady(accountId + QStringLiteral("/") + localConvId,
-                                      messageId, body, bodyHtml, remoteContentBlocked);
+                                      messageId, body, bodyHtml, remoteContentBlocked,
+                                      hasHtml);
             });
 
     connect(backend, &BackendPlugin::messageBodyChunkReady, this,

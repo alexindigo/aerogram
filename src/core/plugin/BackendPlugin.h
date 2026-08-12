@@ -73,7 +73,7 @@ signals:
     ///        UI to show a "remote content blocked" note.
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body, const QString &bodyHtml,
-                          bool remoteContentBlocked);
+                          bool remoteContentBlocked, bool hasHtml);
     /// \brief Progressive render: a sanitized HTML chunk of the message
     ///        body, in document order. Emitted after the plain
     ///        messageBodyReady; lastChunk marks the end. The pane

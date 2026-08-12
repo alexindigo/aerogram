@@ -254,7 +254,7 @@ public:
             if (key.isEmpty()) {
                 QMetaObject::invokeMethod(this, [this, conversationId, messageId]() {
                     emit messageBodyReady(conversationId, messageId, QString(),
-                                          QString(), false);
+                                          QString(), false, false);
                 }, Qt::QueuedConnection);
                 return;
             }
@@ -273,7 +273,8 @@ public:
                 // Plain first, then sanitized HTML chunks for
                 // progressive render (same as the Proton path).
                 emit messageBodyReady(conversationId, messageId, body,
-                                      QString(), blockedRemote);
+                                      QString(), blockedRemote,
+                                      /*hasHtml=*/!chunks.isEmpty());
                 // Chunks QUEUED (not a synchronous burst) so the event
                 // loop paints between them — a burst lands in one frame
                 // and reads as an all-at-once render.

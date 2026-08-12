@@ -481,7 +481,8 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
                                      .arg(QDateTime::currentMSecsSinceEpoch())
                                      .arg(cachedText.size());
             emit messageBodyReady(conversationId, messageId, cachedText,
-                                  QString(), cachedBlocked);
+                                  QString(), cachedBlocked,
+                                  /*hasHtml=*/!cachedChunks.isEmpty());
             // …then sanitized HTML chunks stream in for progressive
             // render (first paint never waits for the whole doc).
             // Each chunk is QUEUED: a synchronous burst lands in one
@@ -530,7 +531,8 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
                                      .arg(QDateTime::currentMSecsSinceEpoch())
                                      .arg(text.size());
             emit messageBodyReady(conversationId, messageId, text,
-                                  QString(), false);
+                                  QString(), false,
+                                  /*hasHtml=*/!rawHtml.isEmpty());
             // …then the sanitized HTML streams in chunks.
             if (!rawHtml.isEmpty()) {
                 const qint64 tSan = QDateTime::currentMSecsSinceEpoch();

@@ -121,7 +121,7 @@ signals:
     void messageSent(bool ok, const QString &conversationId);
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body, const QString &bodyHtml,
-                          bool remoteContentBlocked);
+                          bool remoteContentBlocked, bool hasHtml);
     /// Progressive render passthrough (see BackendPlugin).
     void messageBodyChunkReady(const QString &conversationId, const QString &messageId,
                                const QString &htmlChunk, bool lastChunk,

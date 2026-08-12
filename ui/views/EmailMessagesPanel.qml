@@ -126,12 +126,14 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
 
-                    // Progressive render: plain text paints on
-                    // messageBodyReady; sanitized HTML chunks then append
-                    // via QTextCursor::insertHtml (never a whole-doc
-                    // re-parse). State is delegate-local.
+                    // Progressive render: HTML-capable messages go
+                    // STRAIGHT to streamed rich text (no plain-text
+                    // preview flash — the spinner holds until the first
+                    // chunk). Plain-only mail paints on messageBodyReady
+                    // as before. State is delegate-local.
                     property string htmlAccum: ""
                     property bool richMode: false
+                    readonly property bool expectingHtml: modelData.hasHtml === true
 
                     function appendChunkImpl(chunk, lastChunk) {
                         if (!richMode)
@@ -154,7 +156,8 @@ Item {
 
                     // Loader: body arrives async (decrypt + sanitize on a
                     // worker). Until then show a spinner, not a blank page.
-                    property bool bodyLoaded: (modelData.body && modelData.body.length > 0)
+                    property bool bodyLoaded: (modelData.body && modelData.body.length > 0
+                                               && !expectingHtml)
                                               || htmlAccum.length > 0
                     onBodyLoadedChanged: if (bodyLoaded)
                         console.log("PERF plain-paint msg=" + modelData.messageId
@@ -169,7 +172,7 @@ Item {
                             width: bodyArea.width - 40
                             textFormat: bodyArea.richMode ? TextEdit.RichText
                                                           : TextEdit.PlainText
-                            text: modelData.body || ""
+                            text: bodyArea.expectingHtml ? "" : (modelData.body || "")
                             wrapMode: TextEdit.Wrap
                             readOnly: true
                             selectByMouse: true

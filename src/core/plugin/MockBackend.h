@@ -75,7 +75,7 @@ public:
     {
         emit messageBodyReady(conversationId, messageId,
                               QStringLiteral("Mock body for %1").arg(messageId),
-                              QString(), false);
+                              QString(), false, false);
     }
 
     void saveAttachment(const QString &messageId, int partIndex,
