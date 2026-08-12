@@ -422,11 +422,17 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
                                   QString(), cachedBlocked);
             // …then sanitized HTML chunks stream in for progressive
             // render (first paint never waits for the whole doc).
+            // Each chunk is QUEUED: a synchronous burst lands in one
+            // frame and looks like an all-at-once render; queued
+            // delivery lets the event loop paint between chunks.
             for (int i = 0; i < cachedChunks.size(); ++i) {
-                emit messageBodyChunkReady(conversationId, messageId,
-                                           cachedChunks.at(i),
-                                           i == cachedChunks.size() - 1,
-                                           cachedBlocked);
+                const QString chunk = cachedChunks.at(i);
+                const bool last = i == cachedChunks.size() - 1;
+                QMetaObject::invokeMethod(this,
+                    [this, conversationId, messageId, chunk, last, cachedBlocked]() {
+                        emit messageBodyChunkReady(conversationId, messageId,
+                                                   chunk, last, cachedBlocked);
+                    }, Qt::QueuedConnection);
             }
             return;
         }
@@ -450,13 +456,17 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
                 const QStringList chunks =
                     ContentPipeline::sanitizeStreamed(rawHtml);
                 // blocked flag rides the last chunk (we don't know it
-                // until the stream finishes).
+                // until the stream finishes). Chunks are QUEUED (see
+                // the cache-hit path) so frames render between them.
                 const bool blocked = !chunks.isEmpty();
                 for (int i = 0; i < chunks.size(); ++i) {
-                    emit messageBodyChunkReady(conversationId, messageId,
-                                               chunks.at(i),
-                                               i == chunks.size() - 1,
-                                               blocked);
+                    const QString chunk = chunks.at(i);
+                    const bool last = i == chunks.size() - 1;
+                    QMetaObject::invokeMethod(this,
+                        [this, conversationId, messageId, chunk, last, blocked]() {
+                            emit messageBodyChunkReady(conversationId, messageId,
+                                                       chunk, last, blocked);
+                        }, Qt::QueuedConnection);
                 }
             }
         })

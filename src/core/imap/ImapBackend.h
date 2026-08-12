@@ -274,11 +274,17 @@ public:
                 // progressive render (same as the Proton path).
                 emit messageBodyReady(conversationId, messageId, body,
                                       QString(), blockedRemote);
+                // Chunks QUEUED (not a synchronous burst) so the event
+                // loop paints between them — a burst lands in one frame
+                // and reads as an all-at-once render.
                 for (int i = 0; i < chunks.size(); ++i) {
-                    emit messageBodyChunkReady(conversationId, messageId,
-                                               chunks.at(i),
-                                               i == chunks.size() - 1,
-                                               blockedRemote);
+                    const QString chunk = chunks.at(i);
+                    const bool last = i == chunks.size() - 1;
+                    QMetaObject::invokeMethod(this,
+                        [this, conversationId, messageId, chunk, last, blockedRemote]() {
+                            emit messageBodyChunkReady(conversationId, messageId,
+                                                       chunk, last, blockedRemote);
+                        }, Qt::QueuedConnection);
                 }
             }, Qt::QueuedConnection);
         }));
