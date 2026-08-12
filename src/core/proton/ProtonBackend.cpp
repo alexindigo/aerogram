@@ -317,7 +317,7 @@ void ProtonBackend::fetchConversations()
 void ProtonBackend::fetchMessages(const QString &conversationId)
 {
     call(QStringLiteral("list_messages"),
-         {{QStringLiteral("label_id"), conversationId.toLongLong()},
+         {{QStringLiteral("label_id"), conversationId},
           {QStringLiteral("limit"), 100}})
         .then([this, conversationId](QJsonValue r) {
             // Shape: {"messages": [...], "total": N}. `total` is the
@@ -370,7 +370,7 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
                 for (int i = 0; i < prefetchCount; ++i) {
                     const QString mid = messages.at(i).messageId;
                     call(QStringLiteral("message_body"),
-                         {{QStringLiteral("id"), mid.toLongLong()}})
+                         {{QStringLiteral("id"), mid}})
                         .then([this, conversationId, mid](QJsonValue rb) {
                             if (m_shuttingDown)
                                 return;
@@ -433,7 +433,7 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
     }
 
     call(QStringLiteral("message_body"),
-         {{QStringLiteral("id"), messageId.toLongLong()}})
+         {{QStringLiteral("id"), messageId}})
         .then([this, conversationId, messageId](QJsonValue r) {
             const QJsonObject o = r.toObject();
             // The core returns RAW truth; we persist it raw and sanitize
@@ -537,12 +537,8 @@ void ProtonBackend::persistMessage(const QString &conversationId,
         const QByteArray eml = assembleCompleteEml(
             apiMsg.value(QStringLiteral("header")).toString(), plainBody, html, {}, {});
         m_store.storeMessage(conversationId, eml, plainBody, {});
-        // Ours is the durable copy — drop the SDK's cached body so we
-        // don't keep two on disk.
-        call(QStringLiteral("drop_cached_body"),
-             {{QStringLiteral("id"), messageId.toLongLong()}})
-            .then([](QJsonValue) {})  // (chain-end rule: value step before void onFailed)
-            .onFailed([](const std::exception &) {});  // best-effort
+        // The lean core has no SDK body cache to prune — ours is the
+        // only copy.
         return;
     }
 
@@ -577,10 +573,6 @@ void ProtonBackend::persistMessage(const QString &conversationId,
                 apiMsg.value(QStringLiteral("header")).toString(), plainBody, html,
                 metas, blobs);
             m_store.storeMessage(conversationId, eml, plainBody, metas);
-            call(QStringLiteral("drop_cached_body"),
-                 {{QStringLiteral("id"), messageId.toLongLong()}})
-                .then([](QJsonValue) {})
-                .onFailed([](const std::exception &) {});
         })
         .onFailed([this](const std::exception &e) {
             emit errorOccurred(QString::fromUtf8(e.what()));
