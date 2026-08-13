@@ -331,6 +331,11 @@ public:
         }));
     }
 
+    QString rawMessageSource(const QString &messageId) override
+    {
+        return QString::fromUtf8(m_store.readRawEml(messageId));
+    }
+
 private slots:
     void syncNow() override
     {

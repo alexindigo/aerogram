@@ -34,6 +34,13 @@ public:
     ///        save: no app-side copy is kept.
     virtual void saveAttachment(const QString &messageId, int partIndex,
                                 const QString &destinationPath) = 0;
+    /// \brief Raw message source (.eml) for the pane's Raw view.
+    ///        Empty when the backend has no local store (or miss).
+    virtual QString rawMessageSource(const QString &messageId)
+    {
+        Q_UNUSED(messageId);
+        return {};
+    }
 };
 
 class IMessageSender

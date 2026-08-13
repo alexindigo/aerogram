@@ -93,6 +93,8 @@ public slots:
     void fetchMessages(const QString &conversationId);
     void fetchMessageBody(const QString &conversationId, const QString &messageId);
     void selectMessage(const QString &messageId);
+    /// Raw .eml (or empty) for the open message — pane Raw view.
+    QString rawMessageSource(const QString &messageId) const;
     void saveAttachment(const QString &messageId, int partIndex,
                         const QString &destinationPath);
     void sendMessage(const QString &conversationId, const QString &text);

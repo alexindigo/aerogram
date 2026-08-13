@@ -740,3 +740,8 @@ void ProtonBackend::saveAttachment(const QString &messageId, int partIndex,
     }
     emit attachmentSaved(false, messageId, QString());
 }
+
+QString ProtonBackend::rawMessageSource(const QString &messageId)
+{
+    return QString::fromUtf8(m_store.readRawEml(messageId));
+}

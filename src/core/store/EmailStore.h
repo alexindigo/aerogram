@@ -53,6 +53,9 @@ public:
     /// Store-first body read: index lookup → shard → pipeline
     /// (parse + streamed sanitize). found=false on miss.
     BodyParts readBodyStreamed(const QString &messageId);
+    /// Raw .eml bytes for a message (empty on miss). Used by the
+    /// message-pane Raw view — never parsed/sanitized.
+    QByteArray readRawEml(const QString &messageId);
 
     // ---- writes ----
     /// Persist one message as an .eml (put shard + index row).

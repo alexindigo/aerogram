@@ -736,6 +736,23 @@ void AccountController::fetchMessageBody(const QString &conversationId, const QS
     }
 }
 
+QString AccountController::rawMessageSource(const QString &messageId) const
+{
+    // activeConversationId = "<accountId>/<localId>"; split at first '/'.
+    const int slash = m_activeConversationId.indexOf(QLatin1Char('/'));
+    if (slash < 0)
+        return {};
+    const QString accountId = m_activeConversationId.left(slash);
+    for (const Account &a : m_accounts) {
+        if (a.id != accountId)
+            continue;
+        if (auto *p = dynamic_cast<IMessageProvider *>(a.backend))
+            return p->rawMessageSource(messageId);
+        break;
+    }
+    return {};
+}
+
 void AccountController::selectMessage(const QString &messageId)
 {
     setActiveMessageId(messageId);

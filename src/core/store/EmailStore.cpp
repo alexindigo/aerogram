@@ -93,6 +93,14 @@ EmailStore::BodyParts EmailStore::readBodyStreamed(const QString &messageId)
     return out;
 }
 
+QByteArray EmailStore::readRawEml(const QString &messageId)
+{
+    const QString rel = filePathForMessage(messageId);
+    if (rel.isEmpty())
+        return {};
+    return readShard(rel);
+}
+
 void EmailStore::storeMessage(const QString &conversationId, const QByteArray &eml,
                               const QString &plainBody,
                               const QVector<AttachmentMeta> &attachments,

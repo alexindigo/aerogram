@@ -67,6 +67,7 @@ public:
                           const QString &messageId) override;
     void saveAttachment(const QString &messageId, int partIndex,
                         const QString &destinationPath) override;
+    QString rawMessageSource(const QString &messageId) override;
 
     // IMasterKeyAware — the local store (encrypted shards + FTS index)
     // is keyed by the vault master key, like IMAP.
