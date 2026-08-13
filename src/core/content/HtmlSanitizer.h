@@ -11,6 +11,7 @@
 extern "C" {
 char *sanitize_html(const char *input);
 char *html_to_plain(const char *input);
+char *reader_html(const char *input);
 void sanitize_free_string(char *s);
 void *sanitize_stream_new();
 char *sanitize_stream_write(void *s, const char *chunk);
@@ -52,6 +53,19 @@ public:
             sanitize_free_string(raw);
         return QJsonDocument::fromJson(json.toUtf8()).object()
             .value(QStringLiteral("plain")).toString();
+    }
+
+    /// \brief Reader transform: calm structure-aware subset of the
+    ///        input HTML (prose kept, layout unwrapped, all attrs
+    ///        except link hygiene stripped).
+    static QString toReaderHtml(const QString &html)
+    {
+        char *raw = reader_html(html.toUtf8().constData());
+        const QString json = QString::fromUtf8(raw ? raw : "");
+        if (raw)
+            sanitize_free_string(raw);
+        return QJsonDocument::fromJson(json.toUtf8()).object()
+            .value(QStringLiteral("html")).toString();
     }
 };
 

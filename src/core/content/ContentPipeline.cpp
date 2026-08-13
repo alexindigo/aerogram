@@ -45,13 +45,15 @@ ParsedContent ContentPipeline::parse(const QByteArray &eml)
     if (html)
         out.bodyHtmlRaw = html->decodedText();
 
-    if (out.bodyPlain.trimmed().isEmpty() && !out.bodyHtmlRaw.isEmpty())
-        out.bodyPlain = HtmlSanitizer::toPlainText(out.bodyHtmlRaw);
-
     if (!out.bodyHtmlRaw.isEmpty()) {
         const SanitizedBody s = HtmlSanitizer::sanitize(out.bodyHtmlRaw);
         out.bodyHtmlSafe = s.html;
         out.remoteContentBlocked = s.blockedRemote;
+        out.bodyHtmlReader = HtmlSanitizer::toReaderHtml(out.bodyHtmlRaw);
+        // Plain fallback derives from the READER tree (semantic content,
+        // no scripts/tracking), not the raw HTML.
+        if (out.bodyPlain.trimmed().isEmpty())
+            out.bodyPlain = HtmlSanitizer::toPlainText(out.bodyHtmlReader);
     }
 
     // Attachments (decode-on-save metadata only).

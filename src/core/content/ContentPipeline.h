@@ -26,6 +26,7 @@ struct ParsedContent
     QString bodyPlain;        // decoded text/plain (or html→text fallback)
     QString bodyHtmlRaw;      // raw text/html part (UNSANITIZED)
     QString bodyHtmlSafe;     // sanitized for QTextDocument rich text
+    QString bodyHtmlReader;   // Reader transform (calm semantic subset)
     bool remoteContentBlocked = false;
     QVector<AttachmentMeta> attachments;
 };
