@@ -9,7 +9,6 @@
 
 #include "core/Types.h"
 #include "ui/QrCodeHelper.h"
-#include "ui/HtmlTextAppender.h"
 #include "ui/TextDocumentChrome.h"
 #include "core/crypto/MasterKeyManager.h"
 #include "core/plugin/BackendRegistry.h"
@@ -229,8 +228,6 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("qrCodeHelper", new QrCodeHelper(&engine));
     // Progressive-render helper (chunk append into a TextEdit without
     // re-parsing the document).
-    engine.rootContext()->setContextProperty("htmlTextAppender",
-                                             new HtmlTextAppender(&engine));
     engine.rootContext()->setContextProperty("textDocumentChrome",
                                              new TextDocumentChrome(&engine));
 

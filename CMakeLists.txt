@@ -46,7 +46,6 @@ qt_add_executable(aerogram
     src/core/content/ContentPipeline.h
     src/core/content/ContentPipeline.cpp
     src/ui/QrCodeHelper.h
-    src/ui/HtmlTextAppender.h
     src/ui/TextDocumentChrome.h
 )
 

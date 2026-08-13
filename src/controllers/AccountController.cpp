@@ -468,19 +468,6 @@ void AccountController::connectBackend(const Account &account)
                                       hasHtml);
             });
 
-    connect(backend, &BackendPlugin::messageBodyChunkReady, this,
-            [this, accountId](const QString &localConvId, const QString &messageId,
-                              const QString &htmlChunk, bool lastChunk,
-                              bool remoteContentBlocked) {
-                // Pure passthrough — do NOT accumulate into the model:
-                // a per-chunk model reset would recreate the pane's
-                // delegate and wipe its append state. The pane streams
-                // imperatively off this signal.
-                emit messageBodyChunkReady(accountId + QStringLiteral("/") + localConvId,
-                                           messageId, htmlChunk, lastChunk,
-                                           remoteContentBlocked);
-            });
-
     // Store-as-firewall body path: a backend's .eml landed in the store
     // (or was already there) → read ALL presentations from the store
     // facade and fill the open-message entry. Backends never hand body

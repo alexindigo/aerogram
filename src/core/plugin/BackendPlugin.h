@@ -80,13 +80,6 @@ signals:
     ///        firewall). Emitted on store hits AND after a live fetch
     ///        lands in the store.
     void messageBodyStored(const QString &conversationId, const QString &messageId);
-    /// \brief Progressive render: a sanitized HTML chunk of the message
-    ///        body, in document order. Emitted after the plain
-    ///        messageBodyReady; lastChunk marks the end. The pane
-    ///        appends chunks (cheap insertHtml), never re-parses.
-    void messageBodyChunkReady(const QString &conversationId, const QString &messageId,
-                               const QString &htmlChunk, bool lastChunk,
-                               bool remoteContentBlocked);
     void attachmentSaved(bool ok, const QString &messageId, const QString &path);
 
     // -----------------------------------------------------------------
