@@ -264,6 +264,111 @@ pub unsafe extern "C" fn sanitize_free_string(s: *mut c_char) {
 }
 
 // ---------------------------------------------------------------------
+// Reader transform — calm, structure-aware subset for the default view
+// ---------------------------------------------------------------------
+
+/// Tags that carry prose structure. Everything else is unwrapped
+/// (content kept, tag dropped) or dropped with content (head/style).
+const READER_KEEP: &[&str] = &[
+    "p", "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "pre", "code",
+    "br", "hr", "strong", "b", "em", "i", "a", "sub", "sup", "s", "u",
+];
+
+/// Convert arbitrary email HTML into a calm Reader document: prose
+/// structure kept, layout machinery (tables-as-layout, div/span
+/// wrappers, style/class) dropped, content preserved by unwrapping.
+/// Safe subset of the display sanitizer policy (no scripts, no images,
+/// clean links) — plus structural reduction.
+pub fn to_reader_html(input: &str) -> String {
+    use lol_html::html_content::Element;
+    let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::<u8>::new()));
+    let keep = READER_KEEP;
+    {
+        let mut rewriter = HtmlRewriter::new(
+            Settings::new()
+                .with_strict(false)
+                .append_element_content_handler(element!(
+                    "script, form, iframe, object, embed, link, meta, base, style, head, img",
+                    |el| {
+                        el.remove();
+                        Ok(())
+                    }
+                ))
+                // Layout tables: unwrap the machinery, keep cell content
+                // as paragraphs. (Nested data tables flatten too — v1.)
+                .append_element_content_handler(element!(
+                    "table, tbody, thead, tfoot, tr, td, th, caption, colgroup, col",
+                    |el: &mut Element| {
+                        if matches!(el.tag_name().as_str(), "td" | "th") {
+                            el.set_tag_name("p")?;
+                        } else {
+                            el.remove_and_keep_content();
+                        }
+                        Ok(())
+                    }
+                ))
+                // Links: same hygiene as the display pass.
+                .append_element_content_handler(element!("a", |el| {
+                    el.set_attribute("rel", "noreferrer noopener")?;
+                    el.set_attribute("target", "_blank")?;
+                    if let Some(href) = el.get_attribute("href") {
+                        if let Some(clean) = clean_link(&href) {
+                            el.set_attribute("href", &clean)?;
+                        }
+                    }
+                    Ok(())
+                }))
+                .append_element_content_handler(element!("*", move |el| {
+                    let tag = el.tag_name();
+                    if keep.contains(&tag.as_str()) {
+                        // Strip all attributes except clean link href/rel/target.
+                        let allowed: &[&str] = if tag == "a" {
+                            &["href", "rel", "target"]
+                        } else {
+                            &[]
+                        };
+                        let bad: Vec<String> = el
+                            .attributes()
+                            .iter()
+                            .map(|a| a.name())
+                            .filter(|n| !allowed.contains(&n.as_str()))
+                            .collect();
+                        for name in bad {
+                            el.remove_attribute(&name);
+                        }
+                    } else if tag != "html" && tag != "body" {
+                        // Unknown/structural tags: keep content, drop tag.
+                        el.remove_and_keep_content();
+                    }
+                    Ok(())
+                })),
+            {
+                let out = out.clone();
+                Box::new(move |chunk: &[u8]| out.borrow_mut().extend_from_slice(chunk))
+                    as Box<dyn FnMut(&[u8])>
+            },
+        );
+        let _ = rewriter.write(input.as_bytes());
+        let _ = rewriter.end();
+    }
+    let out = out.borrow();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Reader transform over the C ABI. Returns a JSON string
+/// `{"html": "..."}`.
+/// # Safety: `input` must be a valid NUL-terminated UTF-8 C string.
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub unsafe extern "C" fn reader_html(input: *const c_char) -> *mut c_char {
+    match cstr_arg(input, "input") {
+        Ok(html) => into_c(json!({ "html": to_reader_html(html) })),
+        Err(e) => into_c(json!({ "err": e })),
+    }
+}
+
+
+// ---------------------------------------------------------------------
 // Streaming C ABI — clean bytes flush as raw bytes arrive.
 // ---------------------------------------------------------------------
 
@@ -397,5 +502,59 @@ mod tests {
         assert_eq!(one_shot, streamed);
         assert!(streamed.contains("Hello"));
         assert!(!streamed.contains("<script"));
+    }
+
+    #[test]
+    fn reader_keeps_prose_structure() {
+        let input = r#"<html><head><style>p{x}</style></head><body>
+            <h2 style="color:red">Title</h2>
+            <p class="x">First <b>bold</b> <a href="https://e.com/?utm_source=t">link</a></p>
+            <ul><li>one</li><li>two</li></ul>
+            <blockquote>quoted</blockquote>
+            <pre>code()</pre>
+            </body></html>"#;
+        let out = to_reader_html(input);
+        assert!(out.contains("<h2>Title</h2>"), "heading lost: {out}");
+        assert!(!out.contains("style="), "style attr survived: {out}");
+        assert!(!out.contains("class="), "class attr survived: {out}");
+        assert!(out.contains("<b>bold</b>"), "inline bold lost: {out}");
+        assert!(out.contains("<ul>"), "list lost: {out}");
+        assert!(out.contains("<blockquote>"), "quote lost: {out}");
+        assert!(out.contains("<pre>"), "pre lost: {out}");
+        assert!(out.contains("target=\"_blank\""), "link hygiene lost: {out}");
+        assert!(!out.contains("utm_source"), "tracker param survived: {out}");
+        assert!(!out.contains("<style"), "style tag survived: {out}");
+        assert!(!out.contains("<head"), "head survived: {out}");
+    }
+
+    #[test]
+    fn reader_flattens_layout_tables() {
+        let input = r#"<body>
+            <table width="600"><tr><td style="padding:20px">
+              <table><tr><td><p>Real content</p></td>
+              <td><img src="https://t.example/x.gif"></td></tr></table>
+            </td></tr></table>
+            <script>alert(1)</script>
+            </body>"#;
+        let out = to_reader_html(input);
+        assert!(out.contains("Real content"), "cell content lost: {out}");
+        assert!(!out.contains("<table"), "layout table survived: {out}");
+        assert!(!out.contains("<td"), "td survived: {out}");
+        assert!(!out.contains("<img"), "img survived: {out}");
+        assert!(!out.contains("<script"), "script survived: {out}");
+        assert!(!out.contains("padding"), "style attr survived: {out}");
+    }
+
+    #[test]
+    fn reader_html_live_fixture() {
+        // Same as dev fixture /tmp/html-live.eml body.
+        let input = "<html><body><p>Hello <b>rich</b> IMAP</p>\
+                     <img src='https://tracker.example/p.gif'>\
+                     <script>alert(1)</script></body></html>";
+        let out = to_reader_html(input);
+        assert!(out.contains("Hello"), "content lost: {out}");
+        assert!(out.contains("<b>rich</b>"), "bold lost: {out}");
+        assert!(!out.contains("tracker.example"), "tracker survived: {out}");
+        assert!(!out.contains("<script"), "script survived: {out}");
     }
 }
