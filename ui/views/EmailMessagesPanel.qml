@@ -101,102 +101,231 @@ Item {
                     Layout.fillWidth: true
                 }
 
-                Rectangle {
+                // -- header/body separator with centered view-mode pill --
+                // Modes: 0=HTML (single document, progressive append),
+                //        1=Text (plain), 2=Raw (.eml).
+                Item {
+                    id: modeSeparator
                     Layout.fillWidth: true
-                    Layout.minimumHeight: 1
-                    color: Kirigami.Theme.disabledTextColor
-                    opacity: 0.3
+                    Layout.preferredHeight: Math.max(modePill.implicitHeight, 12)
+
+                    property int viewMode: 0   // 0 html, 1 text, 2 raw
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 1
+                        color: Kirigami.Theme.disabledTextColor
+                        opacity: 0.3
+                    }
+
+                    Rectangle {
+                        id: modePill
+                        anchors.centerIn: parent
+                        implicitWidth: pillRow.implicitWidth + 8
+                        implicitHeight: pillRow.implicitHeight + 6
+                        radius: height / 2
+                        color: Kirigami.Theme.backgroundColor
+                        border.color: Kirigami.Theme.disabledTextColor
+                        border.width: 1
+
+                        Row {
+                            id: pillRow
+                            anchors.centerIn: parent
+                            spacing: 0
+
+                            Repeater {
+                                model: [
+                                    { label: "HTML", mode: 0 },
+                                    { label: "Text", mode: 1 },
+                                    { label: "Raw",  mode: 2 }
+                                ]
+                                delegate: Item {
+                                    required property var modelData
+                                    width: segLabel.implicitWidth + 16
+                                    height: segLabel.implicitHeight + 6
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.margins: 2
+                                        radius: height / 2
+                                        color: modeSeparator.viewMode === modelData.mode
+                                               ? Kirigami.Theme.highlightColor
+                                               : "transparent"
+                                    }
+                                    Label {
+                                        id: segLabel
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        font.pixelSize: 11
+                                        font.bold: modeSeparator.viewMode === modelData.mode
+                                        color: modeSeparator.viewMode === modelData.mode
+                                               ? Kirigami.Theme.highlightedTextColor
+                                               : Kirigami.Theme.textColor
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modeSeparator.viewMode = modelData.mode
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Connections {
+                        target: messageDelegate
+                        function onMessageIdChanged() {
+                            modeSeparator.viewMode = 0
+                            bodyArea.resetHtml()
+                            bodyArea.rawText = ""
+                        }
+                    }
                 }
 
-                // -- remote-content note (only when html was sanitized) --
                 Kirigami.InlineMessage {
                     Layout.fillWidth: true
                     visible: (modelData.remoteContentBlocked === true)
+                             && modeSeparator.viewMode === 0
                     text: "Remote content blocked (tracking protection)."
                     type: Kirigami.MessageType.Information
                 }
 
-                // -- body area (ScrollView + loading overlay) --
-                // Rich text only when the backend delivered SANITIZED html
-                // (scripts/remote content stripped at the source). Plain
-                // otherwise. TextEdit gives selection; readOnly keeps it
-                // display-only. Never a browser engine.
+                // -- body: one document for HTML (progressive append),
+                //    separate plain/raw TextEdits for the other pill modes.
                 Item {
                     id: bodyArea
                     Layout.fillWidth: true
                     Layout.fillHeight: true
 
-                    // Progressive render: HTML-capable messages go
-                    // STRAIGHT to streamed rich text (no plain-text
-                    // preview flash — the spinner holds until the first
-                    // chunk). Plain-only mail paints on messageBodyReady
-                    // as before. State is delegate-local.
-                    property string htmlAccum: ""
-                    property bool richMode: false
-                    property int blockIndex: 0
+                    property string rawText: ""
+                    property bool htmlStarted: false
+                    property int chunkIndex: 0
                     readonly property bool expectingHtml: modelData.hasHtml === true
-
-                    function appendChunkImpl(chunk, lastChunk) {
-                        if (!richMode)
-                            console.log("PERF first-chunk msg=" + modelData.messageId
-                                        + " abs=" + Date.now() + " len=" + chunk.length)
-                        htmlAccum += chunk
-                        if (!richMode) {
-                            richMode = true
-                            bodyEdit.textFormat = TextEdit.RichText
-                            bodyEdit.text = ""   // switch from plain
-                        }
-                        // Debug (AEROGRAM_DEBUG_BLOCKS=1): mark each block
-                        // boundary inline so the streamed split is visible.
-                        // (After the rich flip — markers are HTML.)
-                        if (accountController.debugBlocks) {
-                            const hues = ["#fff3cd", "#d1ecf1", "#d4edda", "#f8d7da", "#e2d9f3"]
-                            const bg = hues[blockIndex % hues.length]
-                            htmlTextAppender.appendHtml(bodyEdit,
-                                "<div style=\"background-color:" + bg + ";color:#555;"
-                                + "font-size:9px\">▸ block " + blockIndex
-                                + " (" + chunk.length + " chars)</div>")
-                        }
-                        blockIndex += 1
-                        const t0 = Date.now()
-                        htmlTextAppender.appendHtml(bodyEdit, chunk)
-                        console.log("PERF chunk-paint msg=" + modelData.messageId
-                                    + " dur=" + (Date.now() - t0) + " len=" + chunk.length)
-                        if (lastChunk)
-                            console.log("PERF last-chunk msg=" + modelData.messageId
-                                        + " abs=" + Date.now())
+                    property bool bodyLoaded: {
+                        if (modeSeparator.viewMode === 0)
+                            return htmlStarted
+                                    || (!expectingHtml && (modelData.body || "").length > 0)
+                        if (modeSeparator.viewMode === 1)
+                            return (modelData.body || "").length > 0
+                        return rawText.length > 0
                     }
 
-                    // Loader: body arrives async (decrypt + sanitize on a
-                    // worker). Until then show a spinner, not a blank page.
-                    property bool bodyLoaded: (modelData.body && modelData.body.length > 0
-                                               && !expectingHtml)
-                                              || htmlAccum.length > 0
-                    onBodyLoadedChanged: if (bodyLoaded)
-                        console.log("PERF plain-paint msg=" + modelData.messageId
-                                    + " abs=" + Date.now())
+                    function resetHtml() {
+                        htmlStarted = false
+                        chunkIndex = 0
+                        htmlEdit.textFormat = TextEdit.PlainText
+                        htmlEdit.text = ""
+                    }
 
+                    function ensureRaw() {
+                        if (rawText.length > 0)
+                            return
+                        const src = accountController.rawMessageSource(messageDelegate.messageId)
+                        rawText = src && src.length > 0
+                                  ? src
+                                  : "(no raw source stored for this message)"
+                    }
+
+                    Connections {
+                        target: modeSeparator
+                        function onViewModeChanged() {
+                            if (modeSeparator.viewMode === 2)
+                                bodyArea.ensureRaw()
+                        }
+                    }
+
+                    // Plain-only mail: one-shot into the HTML-mode editor
+                    // as plain text (no chunk stream).
+                    property string plainBody: modelData.body || ""
+                    onPlainBodyChanged: {
+                        if (expectingHtml || plainBody.length === 0)
+                            return
+                        if (htmlStarted)
+                            return
+                        htmlEdit.textFormat = TextEdit.PlainText
+                        htmlEdit.text = plainBody
+                        htmlStarted = true
+                    }
+
+                    // Progressive HTML: append sanitized fragments into
+                    // one QTextDocument (no ListView / no fake blocks).
+                    function appendChunkImpl(chunk, lastChunk) {
+                        if (!htmlStarted) {
+                            console.log("PERF first-chunk msg=" + modelData.messageId
+                                        + " abs=" + Date.now() + " len=" + chunk.length)
+                            htmlEdit.textFormat = TextEdit.RichText
+                            htmlEdit.text = ""
+                            htmlStarted = true
+                        }
+                        const t0 = Date.now()
+                        htmlTextAppender.appendHtml(htmlEdit, chunk)
+                        console.log("PERF chunk-paint msg=" + modelData.messageId
+                                    + " dur=" + (Date.now() - t0)
+                                    + " len=" + chunk.length
+                                    + " i=" + chunkIndex)
+                        chunkIndex += 1
+                        if (lastChunk)
+                            console.log("PERF last-chunk msg=" + modelData.messageId
+                                        + " abs=" + Date.now()
+                                        + " chunks=" + chunkIndex)
+                    }
+
+                    // ---- HTML mode: single progressive TextEdit ----
                     ScrollView {
                         anchors.fill: parent
+                        visible: modeSeparator.viewMode === 0
                         clip: true
-
                         TextEdit {
-                            id: bodyEdit
-                            width: bodyArea.width - 40
-                            textFormat: bodyArea.richMode ? TextEdit.RichText
-                                                          : TextEdit.PlainText
-                            text: bodyArea.expectingHtml ? "" : (modelData.body || "")
+                            id: htmlEdit
+                            width: bodyArea.width - 16
+                            textFormat: TextEdit.PlainText
+                            text: ""
                             wrapMode: TextEdit.Wrap
                             readOnly: true
                             selectByMouse: true
                             color: Kirigami.Theme.textColor
-                            // Links open externally; we never navigate in-app.
                             onLinkActivated: (url) => Qt.openUrlExternally(url)
                         }
                     }
 
-                    // Loading overlay (sibling of the ScrollView, so it
-                    // centers on the pane, not inside scrollable content).
+                    // ---- Text mode ----
+                    ScrollView {
+                        anchors.fill: parent
+                        visible: modeSeparator.viewMode === 1
+                        clip: true
+                        TextEdit {
+                            width: bodyArea.width - 16
+                            textFormat: TextEdit.PlainText
+                            text: modelData.body || ""
+                            wrapMode: TextEdit.Wrap
+                            readOnly: true
+                            selectByMouse: true
+                            color: Kirigami.Theme.textColor
+                            font.family: "monospace"
+                            font.pixelSize: 12
+                        }
+                    }
+
+                    // ---- Raw mode ----
+                    ScrollView {
+                        anchors.fill: parent
+                        visible: modeSeparator.viewMode === 2
+                        clip: true
+                        TextEdit {
+                            width: bodyArea.width - 16
+                            textFormat: TextEdit.PlainText
+                            text: bodyArea.rawText
+                            wrapMode: TextEdit.Wrap
+                            readOnly: true
+                            selectByMouse: true
+                            color: Kirigami.Theme.textColor
+                            font.family: "monospace"
+                            font.pixelSize: 11
+                        }
+                    }
+
                     Column {
                         anchors.centerIn: parent
                         visible: !bodyArea.bodyLoaded
@@ -206,7 +335,9 @@ Item {
                             running: true
                         }
                         Label {
-                            text: "Loading message…"
+                            text: modeSeparator.viewMode === 2
+                                  ? "Loading raw source…"
+                                  : "Loading message…"
                             color: Kirigami.Theme.disabledTextColor
                         }
                     }
