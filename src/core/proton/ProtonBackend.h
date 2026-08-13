@@ -68,6 +68,7 @@ public:
     void saveAttachment(const QString &messageId, int partIndex,
                         const QString &destinationPath) override;
     QString rawMessageSource(const QString &messageId) override;
+    EmailStore::BodyViews readBodyViews(const QString &messageId) override;
 
     // IMasterKeyAware — the local store (encrypted shards + FTS index)
     // is keyed by the vault master key, like IMAP.

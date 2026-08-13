@@ -242,53 +242,26 @@ public:
 
     void fetchMessageBody(const QString &conversationId, const QString &messageId) override
     {
-        const QString dbPath = m_dbPath;
-        const QString storageRoot = m_storageRoot;
-        const QByteArray key = m_key;
-        track(QtConcurrent::run([this, dbPath, storageRoot, key, conversationId, messageId]() {
+        // Store-as-firewall: ensure-and-signal only. IMAP bodies land in
+        // the store via sync; on a hit we just say so and the controller
+        // reads presentations via readBodyViews.
+        track(QtConcurrent::run([this, conversationId, messageId]() {
             if (m_shuttingDown) return;
-            QString body;
-            QStringList chunks;
-            bool blockedRemote = false;
-            QString rel;
-            if (key.isEmpty()) {
-                QMetaObject::invokeMethod(this, [this, conversationId, messageId]() {
-                    emit messageBodyReady(conversationId, messageId, QString(),
-                                          QString(), false, false);
-                }, Qt::QueuedConnection);
-                return;
-            }
-            {
+            bool found = false;
+            if (!m_key.isEmpty()) {
                 const auto parts = m_store.readBodyStreamed(messageId);
-                if (parts.found) {
-                    body = parts.plain;
-                    chunks = parts.htmlChunks;
-                    blockedRemote = parts.blockedRemote;
-                }
+                found = parts.found;
             }
-            qInfo() << "ImapBackend: body fetch" << messageId
-                    << (body.isEmpty() ? "miss" : "hit");
-            QMetaObject::invokeMethod(this, [this, conversationId, messageId, body, chunks, blockedRemote]() {
-                qInfo() << "ImapBackend: messageBodyReady" << messageId << body.size() << "chars";
-                // Plain first, then sanitized HTML chunks for
-                // progressive render (same as the Proton path).
-                emit messageBodyReady(conversationId, messageId, body,
-                                      QString(), blockedRemote,
-                                      /*hasHtml=*/!chunks.isEmpty());
-                // Chunks QUEUED (not a synchronous burst) so the event
-                // loop paints between them — a burst lands in one frame
-                // and reads as an all-at-once render.
-                for (int i = 0; i < chunks.size(); ++i) {
-                    const QString chunk = chunks.at(i);
-                    const bool last = i == chunks.size() - 1;
-                    QMetaObject::invokeMethod(this,
-                        [this, conversationId, messageId, chunk, last, blockedRemote]() {
-                            emit messageBodyChunkReady(conversationId, messageId,
-                                                       chunk, last, blockedRemote);
-                        }, Qt::QueuedConnection);
-                }
+            QMetaObject::invokeMethod(this, [this, conversationId, messageId, found]() {
+                if (found)
+                    emit messageBodyStored(conversationId, messageId);
             }, Qt::QueuedConnection);
         }));
+    }
+
+    EmailStore::BodyViews readBodyViews(const QString &messageId) override
+    {
+        return m_store.readBodyViews(messageId);
     }
 
     // -----------------------------------------------------------------

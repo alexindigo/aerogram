@@ -402,50 +402,18 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
 
 void ProtonBackend::fetchMessageBody(const QString &conversationId, const QString &messageId)
 {
-    // Store-first: a previously fetched message reads from the local
-    // encrypted store (instant, offline). Only a miss hits the SDK.
-    // Policy: the store holds RAW truth; sanitization happens at read
-    // time via the shared pipeline (defense in depth).
+    // Store-as-firewall: the pane never reads backend content. We only
+    // ensure the .eml is in the store, then emit messageBodyStored —
+    // the controller reads presentations via readBodyViews.
     if (!m_key.isEmpty()) {
-        QString cachedText;
-        QStringList cachedChunks;
-        bool cachedBlocked = false;
-        {
-            // Legacy shards (raw plain text from before the .eml
-            // synthesis) can never stream HTML — treat as a miss so the
-            // live fetch below re-persists in multipart (self-healing
-            // upgrade). Detected via the missing Content-Type header.
-            const QString rel = m_store.filePathForMessage(messageId);
-            const QByteArray raw = rel.isEmpty() ? QByteArray()
-                                                 : m_store.readShard(rel);
-            if (!raw.isEmpty() && raw.contains("Content-Type:")) {
-                const auto parts = m_store.readBodyStreamed(messageId);
-                if (parts.found) {
-                    cachedText = parts.plain;
-                    cachedChunks = parts.htmlChunks;
-                    cachedBlocked = parts.blockedRemote;
-                }
-            }
-        }
-        if (!cachedText.isEmpty()) {
-            // Plain text paints instantly…
-            emit messageBodyReady(conversationId, messageId, cachedText,
-                                  QString(), cachedBlocked,
-                                  /*hasHtml=*/!cachedChunks.isEmpty());
-            // …then sanitized HTML chunks stream in for progressive
-            // render (first paint never waits for the whole doc).
-            // Each chunk is QUEUED: a synchronous burst lands in one
-            // frame and looks like an all-at-once render; queued
-            // delivery lets the event loop paint between chunks.
-            for (int i = 0; i < cachedChunks.size(); ++i) {
-                const QString chunk = cachedChunks.at(i);
-                const bool last = i == cachedChunks.size() - 1;
-                QMetaObject::invokeMethod(this,
-                    [this, conversationId, messageId, chunk, last, cachedBlocked]() {
-                        emit messageBodyChunkReady(conversationId, messageId,
-                                                   chunk, last, cachedBlocked);
-                    }, Qt::QueuedConnection);
-            }
+        // Legacy shards (raw plain text from before the .eml synthesis)
+        // lack Content-Type — treat as a miss so the live fetch
+        // re-persists in multipart (self-healing upgrade).
+        const QString rel = m_store.filePathForMessage(messageId);
+        const QByteArray raw = rel.isEmpty() ? QByteArray()
+                                             : m_store.readShard(rel);
+        if (!raw.isEmpty() && raw.contains("Content-Type:")) {
+            emit messageBodyStored(conversationId, messageId);
             return;
         }
     }
@@ -454,34 +422,9 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
          {{QStringLiteral("id"), messageId}})
         .then([this, conversationId, messageId](QJsonValue r) {
             const QJsonObject o = r.toObject();
-            // The core returns RAW truth; we persist it raw and sanitize
-            // for display via the shared streaming pipeline.
-            const QString text = o.value(QStringLiteral("text")).toString();
-            const QString rawHtml = o.value(QStringLiteral("html")).toString();
-            persistMessage(conversationId, messageId, o, text);
-
-            // Plain first…
-            emit messageBodyReady(conversationId, messageId, text,
-                                  QString(), false,
-                                  /*hasHtml=*/!rawHtml.isEmpty());
-            // …then the sanitized HTML streams in chunks.
-            if (!rawHtml.isEmpty()) {
-                const QStringList chunks =
-                    ContentPipeline::sanitizeStreamed(rawHtml);
-                // blocked flag rides the last chunk (we don't know it
-                // until the stream finishes). Chunks are QUEUED (see
-                // the cache-hit path) so frames render between them.
-                const bool blocked = !chunks.isEmpty();
-                for (int i = 0; i < chunks.size(); ++i) {
-                    const QString chunk = chunks.at(i);
-                    const bool last = i == chunks.size() - 1;
-                    QMetaObject::invokeMethod(this,
-                        [this, conversationId, messageId, chunk, last, blocked]() {
-                            emit messageBodyChunkReady(conversationId, messageId,
-                                                       chunk, last, blocked);
-                        }, Qt::QueuedConnection);
-                }
-            }
+            // persistMessage emits messageBodyStored once the write lands.
+            persistMessage(conversationId, messageId, o,
+                           o.value(QStringLiteral("text")).toString());
         })
         .onFailed([this, messageId](const std::exception &e) {
             qWarning().noquote() << QStringLiteral("ProtonBackend: body fetch failed for %1: %2")
@@ -564,6 +507,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
         m_store.storeMessage(conversationId, eml, plainBody, {}, messageId);
         // The lean core has no SDK body cache to prune — ours is the
         // only copy.
+        emit messageBodyStored(conversationId, messageId);
         return;
     }
 
@@ -598,6 +542,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
                 apiMsg.value(QStringLiteral("header")).toString(), plainBody, html,
                 metas, blobs);
             m_store.storeMessage(conversationId, eml, plainBody, metas, messageId);
+            emit messageBodyStored(conversationId, messageId);
         })
         .onFailed([this, messageId](const std::exception &e) {
             // LOUD: a persist failure means this message NEVER reaches
@@ -647,4 +592,9 @@ void ProtonBackend::saveAttachment(const QString &messageId, int partIndex,
 QString ProtonBackend::rawMessageSource(const QString &messageId)
 {
     return QString::fromUtf8(m_store.readRawEml(messageId));
+}
+
+EmailStore::BodyViews ProtonBackend::readBodyViews(const QString &messageId)
+{
+    return m_store.readBodyViews(messageId);
 }

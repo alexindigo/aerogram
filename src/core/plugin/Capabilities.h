@@ -4,6 +4,8 @@
 #include <QString>
 #include <QVariantMap>
 
+#include "../store/EmailStore.h"
+
 /// \file Capabilities.h
 /// \brief Pure-C++ capability contracts a BackendPlugin may implement.
 ///
@@ -37,6 +39,14 @@ public:
     /// \brief Raw message source (.eml) for the pane's Raw view.
     ///        Empty when the backend has no local store (or miss).
     virtual QString rawMessageSource(const QString &messageId)
+    {
+        Q_UNUSED(messageId);
+        return {};
+    }
+    /// \brief All presentations of a message from the local store
+    ///        (store-as-firewall: the UI reads these, never backend
+    ///        payloads). found=false when not stored.
+    virtual EmailStore::BodyViews readBodyViews(const QString &messageId)
     {
         Q_UNUSED(messageId);
         return {};

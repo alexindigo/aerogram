@@ -481,6 +481,50 @@ void AccountController::connectBackend(const Account &account)
                                            remoteContentBlocked);
             });
 
+    // Store-as-firewall body path: a backend's .eml landed in the store
+    // (or was already there) → read ALL presentations from the store
+    // facade and fill the open-message entry. Backends never hand body
+    // content to the UI.
+    connect(backend, &BackendPlugin::messageBodyStored, this,
+            [this, accountId](const QString &localConvId, const QString &messageId) {
+                if (messageId != m_activeMessageId)
+                    return;  // prefetch stores too — only the open message
+                Account *account = accountById(accountId);
+                if (!account)
+                    return;
+                auto *p = dynamic_cast<IMessageProvider *>(account->backend);
+                if (!p)
+                    return;
+                const EmailStore::BodyViews views = p->readBodyViews(messageId);
+                if (!views.found)
+                    return;
+                QVariantList msgs = m_activeMessages;
+                for (int i = 0; i < msgs.size(); ++i) {
+                    QVariantMap e = msgs[i].toMap();
+                    if (e.value(QStringLiteral("messageId")).toString() != messageId)
+                        continue;
+                    e[QStringLiteral("body")] = views.textOnly;
+                    e[QStringLiteral("bodyHtml")] = QString();
+                    e[QStringLiteral("readerHtml")] = views.readerHtml;
+                    e[QStringLiteral("sanitizedHtml")] = views.sanitizedHtml;
+                    e[QStringLiteral("remoteContentBlocked")] = views.blockedRemote;
+                    e[QStringLiteral("hasHtml")] =
+                        !views.sanitizedHtml.isEmpty() || !views.readerHtml.isEmpty();
+                    e[QStringLiteral("headers")] = views.headers;
+                    if (e.value(QStringLiteral("subject")).toString().isEmpty())
+                        e[QStringLiteral("subject")] = views.subject;
+                    msgs[i] = e;
+                    setActiveMessages(msgs);
+                    break;
+                }
+                // IPC + legacy consumers still get a ready signal with
+                // the plain body (drive checks it).
+                emit messageBodyReady(accountId + QStringLiteral("/") + localConvId,
+                                      messageId, views.textOnly, QString(),
+                                      views.blockedRemote,
+                                      !views.sanitizedHtml.isEmpty());
+            });
+
     connect(backend, &BackendPlugin::attachmentSaved, this,
             [this](bool ok, const QString &messageId, const QString &path) {
                 m_attachmentSaveStatus = ok ? QStringLiteral("Saved to ") + path
@@ -724,6 +768,9 @@ void AccountController::fetchMessages(const QString &conversationId)
 
 void AccountController::fetchMessageBody(const QString &conversationId, const QString &messageId)
 {
+    // A direct body fetch is an open: the store-readback handler fills
+    // only the ACTIVE message, so mark it.
+    setActiveMessageId(messageId);
     QString localId;
     Account *account = accountForConversation(conversationId, &localId);
     if (auto *p = dynamic_cast<IMessageProvider *>(account ? account->backend : nullptr)) {
@@ -759,6 +806,9 @@ void AccountController::selectMessage(const QString &messageId)
     entry[QStringLiteral("messageId")] = messageId;
     entry[QStringLiteral("body")] = QString();
     entry[QStringLiteral("bodyHtml")] = QString();   // filled by fetch
+    entry[QStringLiteral("readerHtml")] = QString();
+    entry[QStringLiteral("sanitizedHtml")] = QString();
+    entry[QStringLiteral("headers")] = QVariantMap();
     entry[QStringLiteral("remoteContentBlocked")] = false;
 
     QVariantList atts;

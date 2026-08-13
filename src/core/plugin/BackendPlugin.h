@@ -74,6 +74,12 @@ signals:
     void messageBodyReady(const QString &conversationId, const QString &messageId,
                           const QString &body, const QString &bodyHtml,
                           bool remoteContentBlocked, bool hasHtml);
+    /// \brief The message's raw .eml is in the local store. The
+    ///        controller reads presentations via readBodyViews — the
+    ///        backend never hands body content to the UI (store-as-
+    ///        firewall). Emitted on store hits AND after a live fetch
+    ///        lands in the store.
+    void messageBodyStored(const QString &conversationId, const QString &messageId);
     /// \brief Progressive render: a sanitized HTML chunk of the message
     ///        body, in document order. Emitted after the plain
     ///        messageBodyReady; lastChunk marks the end. The pane
