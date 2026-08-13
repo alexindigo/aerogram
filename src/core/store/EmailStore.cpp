@@ -100,6 +100,29 @@ QByteArray EmailStore::readRawEml(const QString &messageId)
     return readShard(rel);
 }
 
+EmailStore::BodyViews EmailStore::readBodyViews(const QString &messageId)
+{
+    BodyViews out;
+    const QString rel = filePathForMessage(messageId);
+    if (rel.isEmpty())
+        return out;
+    const QByteArray raw = readShard(rel);
+    if (raw.isEmpty())
+        return out;
+    const auto parsed = ContentPipeline::parse(raw);
+    out.found = true;
+    out.textOnly = parsed.bodyPlain;
+    out.readerHtml = parsed.bodyHtmlReader;
+    out.sanitizedHtml = parsed.bodyHtmlSafe;
+    out.blockedRemote = parsed.remoteContentBlocked;
+    out.headers = parsed.headers;
+    out.subject = parsed.subject;
+    out.sender = parsed.sender;
+    out.date = parsed.date;
+    out.attachments = parsed.attachments;
+    return out;
+}
+
 void EmailStore::storeMessage(const QString &conversationId, const QByteArray &eml,
                               const QString &plainBody,
                               const QVector<AttachmentMeta> &attachments,

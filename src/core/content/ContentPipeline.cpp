@@ -69,6 +69,71 @@ ParsedContent ContentPipeline::parse(const QByteArray &eml)
         out.attachments.append(a);
     }
 
+    // ---- universal headers bag (dict → list → facet dict) ----
+    // Full pass: every header as {raw: asUnicodeString}; known headers
+    // get structured facets on top. One array element per header
+    // instance (list = repetition), facets combined per instance.
+    for (const auto *h : msg.headers()) {
+        const QString name = QString::fromLatin1(h->type());
+        QVariantMap facet;
+        facet[QStringLiteral("raw")] = h->asUnicodeString();
+        QVariantList list = out.headers.value(name).toList();
+        list.append(facet);
+        out.headers[name] = list;
+    }
+
+    // Structured facets for the shelf-relevant headers.
+    const auto setFacets = [&out](const QString &name, const QVariantMap &facets) {
+        QVariantList list = out.headers.value(name).toList();
+        if (list.isEmpty())
+            list.append(QVariantMap());
+        QVariantMap first = list.first().toMap();
+        for (auto it = facets.begin(); it != facets.end(); ++it)
+            first.insert(it.key(), it.value());
+        list[0] = first;
+        out.headers[name] = list;
+    };
+    const auto mailboxFacets = [](const KMime::Headers::Base *h,
+                                  QList<QVariantMap> &outList) {
+        const auto *mb = dynamic_cast<const KMime::Headers::Generics::MailboxList *>(h);
+        if (!mb)
+            return;
+        for (const auto &box : mb->mailboxes()) {
+            QVariantMap m;
+            m[QStringLiteral("display")] = box.prettyAddress();
+            m[QStringLiteral("addr")] = QString::fromLatin1(box.address());
+            outList.append(m);
+        }
+    };
+    const auto setMailboxList = [&out, &mailboxFacets](const QString &name,
+                                                       const QList<QVariantMap> &boxes) {
+        if (boxes.isEmpty())
+            return;
+        QVariantList vl;
+        for (const auto &m : boxes)
+            vl.append(m);
+        out.headers[name] = vl;
+    };
+    QList<QVariantMap> fromBoxes;
+    if (const auto *h = msg.from(KMime::DontCreate))
+        mailboxFacets(h, fromBoxes);
+    setMailboxList(QStringLiteral("From"), fromBoxes);
+    for (const char *nm : {"To", "Cc"}) {
+        QList<QVariantMap> list;
+        for (const auto *h : msg.headersByType(nm))
+            mailboxFacets(h, list);
+        setMailboxList(QString::fromLatin1(nm), list);
+    }
+    if (!out.subject.isEmpty())
+        setFacets(QStringLiteral("Subject"),
+                  {{QStringLiteral("text"), out.subject}});
+    if (out.date.isValid())
+        setFacets(QStringLiteral("Date"),
+                  {{QStringLiteral("iso"), out.date.toUTC().toString(Qt::ISODateWithMs)}});
+    if (!out.messageId.isEmpty())
+        setFacets(QStringLiteral("Message-ID"),
+                  {{QStringLiteral("value"), out.messageId}});
+
     return out;
 }
 

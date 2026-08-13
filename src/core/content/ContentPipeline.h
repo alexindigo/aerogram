@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QString>
+#include <QVariantMap>
 #include <QVector>
 
 #include "../Types.h"
@@ -29,6 +30,12 @@ struct ParsedContent
     QString bodyHtmlReader;   // Reader transform (calm semantic subset)
     bool remoteContentBlocked = false;
     QVector<AttachmentMeta> attachments;
+
+    /// Universal headers bag: name → list of facet maps
+    /// (QVariantMap{name → QVariantList{QVariantMap{facet→value}}}).
+    /// Conventions: mailbox facets {display,addr}; Subject {raw,text};
+    /// Date {raw,iso}; ids {value}; everything else {raw}.
+    QVariantMap headers;
 };
 
 class ContentPipeline

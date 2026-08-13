@@ -1,10 +1,12 @@
 #ifndef EMAILSTORE_H
 #define EMAILSTORE_H
 
+#include <QDateTime>
 #include <QMutex>
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 
 #include "MetadataIndex.h"
@@ -56,6 +58,22 @@ public:
     /// Raw .eml bytes for a message (empty on miss). Used by the
     /// message-pane Raw view — never parsed/sanitized.
     QByteArray readRawEml(const QString &messageId);
+
+    /// Universal content views of a message — the ONLY way UI gets body
+    /// content (store-as-firewall). One shard read + one KMime parse
+    /// produces all four presentations + the headers bag.
+    struct BodyViews {
+        bool found = false;
+        QString textOnly;       // plain text (MIME plain or Reader→text)
+        QString readerHtml;     // calm Reader document (default view)
+        QString sanitizedHtml;  // full Qt-safe HTML for the HTML view
+        bool blockedRemote = false;
+        QVariantMap headers;    // name → list of facet maps
+        QString subject, sender;      // envelope projections
+        QDateTime date;
+        QVector<AttachmentMeta> attachments;
+    };
+    BodyViews readBodyViews(const QString &messageId);
 
     // ---- writes ----
     /// Persist one message as an .eml (put shard + index row).
