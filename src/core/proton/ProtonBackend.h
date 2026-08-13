@@ -107,15 +107,6 @@ private:
     std::thread m_eventThread;
     std::atomic<bool> m_eventThreadStop{false};
 
-    // PERF instrumentation: in-flight FFI depth + prefetch tracking so
-    // an open's log line shows whether it queued behind the storm.
-    // The sets are touched from worker .then continuations AND the UI
-    // thread (fetchMessageBody) — mutex-guarded.
-    std::atomic<int> m_inflight{0};
-    QMutex m_prefetchMutex;
-    QSet<QString> m_prefetchInFlight;   // ids with a prefetch call running
-    QSet<QString> m_lastListWindow;     // first-N ids of the last listing
-
     // Worker lifetime discipline (mirrors ImapBackend): nothing
     // captures a live `this`/m_core past teardown. Workers check    // m_shuttingDown at entry; shutdown() drains them before freeing
     // the core. Store/index serialization lives inside EmailStore.

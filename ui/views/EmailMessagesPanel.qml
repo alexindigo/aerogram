@@ -253,23 +253,12 @@ Item {
                     // one QTextDocument (no ListView / no fake blocks).
                     function appendChunkImpl(chunk, lastChunk) {
                         if (!htmlStarted) {
-                            console.log("PERF first-chunk msg=" + modelData.messageId
-                                        + " abs=" + Date.now() + " len=" + chunk.length)
                             htmlEdit.textFormat = TextEdit.RichText
                             htmlEdit.text = ""
                             htmlStarted = true
                         }
-                        const t0 = Date.now()
                         htmlTextAppender.appendHtml(htmlEdit, chunk)
-                        console.log("PERF chunk-paint msg=" + modelData.messageId
-                                    + " dur=" + (Date.now() - t0)
-                                    + " len=" + chunk.length
-                                    + " i=" + chunkIndex)
                         chunkIndex += 1
-                        if (lastChunk)
-                            console.log("PERF last-chunk msg=" + modelData.messageId
-                                        + " abs=" + Date.now()
-                                        + " chunks=" + chunkIndex)
                     }
 
                     // ---- HTML mode: single progressive TextEdit ----

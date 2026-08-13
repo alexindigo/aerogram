@@ -190,20 +190,12 @@ QFuture<QJsonValue> ProtonBackend::call(const QString &method, const QJsonObject
     const QByteArray m = method.toUtf8();
     const QByteArray p = QJsonDocument(params).toJson(QJsonDocument::Compact);
     ProtonCore *core = m_core;
-    // PERF: id tag (when present) lets the waterfall join FFI time to a
-    // specific message open; inflight shows storm depth at dispatch.
-    const QString tag = params.value(QStringLiteral("id")).toString();
-    const int depth = ++m_inflight;
-    const qint64 tBegin = QDateTime::currentMSecsSinceEpoch();
-    qInfo().noquote() << QStringLiteral("PERF ffi-begin method=%1 msg=%2 abs=%3 inflight=%4")
-                             .arg(method, tag).arg(tBegin).arg(depth);
 
-    m_workers.addFuture(QtConcurrent::run([this, core, m, p, promise, method, tag, tBegin] {
+    m_workers.addFuture(QtConcurrent::run([this, core, m, p, promise] {
         if (m_shuttingDown) {
             promise->setException(std::make_exception_ptr(
                 ProtonError(QStringLiteral("backend is shutting down"))));
             promise->finish();
-            --m_inflight;
             return;
         }
         try {
@@ -213,9 +205,6 @@ QFuture<QJsonValue> ProtonBackend::call(const QString &method, const QJsonObject
             promise->setException(std::current_exception());
         }
         promise->finish();
-        const qint64 dur = QDateTime::currentMSecsSinceEpoch() - tBegin;
-        qInfo().noquote() << QStringLiteral("PERF ffi-end method=%1 msg=%2 dur=%3 inflight=%4")
-                                 .arg(method, tag).arg(dur).arg(--m_inflight);
     }));
     return future;
 }
@@ -384,15 +373,6 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
             // clobber whatever message is open).
             if (!m_key.isEmpty() && !m_shuttingDown) {
                 const int prefetchCount = qMin(20, messages.size());
-                {
-                    QMutexLocker lock(&m_prefetchMutex);
-                    m_lastListWindow.clear();
-                    for (int i = 0; i < prefetchCount; ++i)
-                        m_lastListWindow.insert(messages.at(i).messageId);
-                }
-                qInfo().noquote() << QStringLiteral("PERF prefetch-start conv=%1 n=%2 abs=%3")
-                                         .arg(conversationId).arg(prefetchCount)
-                                         .arg(QDateTime::currentMSecsSinceEpoch());
                 for (int i = 0; i < prefetchCount; ++i) {
                     const QString mid = messages.at(i).messageId;
                     // Skip bodies the store already has — without this,
@@ -400,26 +380,16 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
                     // the same 20 bodies forever.
                     if (!m_store.filePathForMessage(mid).isEmpty())
                         continue;
-                    {
-                        QMutexLocker lock(&m_prefetchMutex);
-                        m_prefetchInFlight.insert(mid);
-                    }
                     call(QStringLiteral("message_body"),
                          {{QStringLiteral("id"), mid}})
                         .then([this, conversationId, mid](QJsonValue rb) {
-                            {
-                                QMutexLocker lock(&m_prefetchMutex);
-                                m_prefetchInFlight.remove(mid);
-                            }
                             if (m_shuttingDown)
                                 return;
                             const QJsonObject o = rb.toObject();
                             persistMessage(conversationId, mid, o,
                                            o.value(QStringLiteral("text")).toString());
                         })
-                        .onFailed([this, mid](const std::exception &) {
-                            QMutexLocker lock(&m_prefetchMutex);
-                            m_prefetchInFlight.remove(mid);
+                        .onFailed([](const std::exception &) {
                             // prefetch is best-effort; ignore
                         });
                 }
@@ -432,19 +402,6 @@ void ProtonBackend::fetchMessages(const QString &conversationId)
 
 void ProtonBackend::fetchMessageBody(const QString &conversationId, const QString &messageId)
 {
-    // PERF: open-path waterfall entry. abs = epoch ms (matches QML
-    // Date.now()); the harvest script aligns stages per messageId.
-    const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
-    bool inWindow, prefetchRunning;
-    {
-        QMutexLocker lock(&m_prefetchMutex);
-        inWindow = m_lastListWindow.contains(messageId);
-        prefetchRunning = m_prefetchInFlight.contains(messageId);
-    }
-    qInfo().noquote() << QStringLiteral("PERF open msg=%1 abs=%2 inflight=%3 prefetch_window=%4 prefetch_inflight=%5")
-                             .arg(messageId).arg(t0).arg(m_inflight.load())
-                             .arg(inWindow)
-                             .arg(prefetchRunning);
     // Store-first: a previously fetched message reads from the local
     // encrypted store (instant, offline). Only a miss hits the SDK.
     // Policy: the store holds RAW truth; sanitization happens at read
@@ -458,22 +415,11 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
             // synthesis) can never stream HTML — treat as a miss so the
             // live fetch below re-persists in multipart (self-healing
             // upgrade). Detected via the missing Content-Type header.
-            const qint64 tSniff = QDateTime::currentMSecsSinceEpoch();
             const QString rel = m_store.filePathForMessage(messageId);
             const QByteArray raw = rel.isEmpty() ? QByteArray()
                                                  : m_store.readShard(rel);
-            qInfo().noquote() << QStringLiteral("PERF store-sniff msg=%1 dur=%2 bytes=%3")
-                                     .arg(messageId)
-                                     .arg(QDateTime::currentMSecsSinceEpoch() - tSniff)
-                                     .arg(raw.size());
             if (!raw.isEmpty() && raw.contains("Content-Type:")) {
-                const qint64 tRead = QDateTime::currentMSecsSinceEpoch();
                 const auto parts = m_store.readBodyStreamed(messageId);
-                qInfo().noquote() << QStringLiteral("PERF store-read msg=%1 dur=%2 found=%3 chunks=%4")
-                                         .arg(messageId)
-                                         .arg(QDateTime::currentMSecsSinceEpoch() - tRead)
-                                         .arg(parts.found)
-                                         .arg(parts.htmlChunks.size());
                 if (parts.found) {
                     cachedText = parts.plain;
                     cachedChunks = parts.htmlChunks;
@@ -482,15 +428,7 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
             }
         }
         if (!cachedText.isEmpty()) {
-            qInfo().noquote() << QStringLiteral("PERF verdict msg=%1 hit abs=%2 open_to_ready=%3")
-                                     .arg(messageId)
-                                     .arg(QDateTime::currentMSecsSinceEpoch())
-                                     .arg(QDateTime::currentMSecsSinceEpoch() - t0);
             // Plain text paints instantly…
-            qInfo().noquote() << QStringLiteral("PERF emit-ready msg=%1 abs=%2 plain_len=%3 source=cache")
-                                     .arg(messageId)
-                                     .arg(QDateTime::currentMSecsSinceEpoch())
-                                     .arg(cachedText.size());
             emit messageBodyReady(conversationId, messageId, cachedText,
                                   QString(), cachedBlocked,
                                   /*hasHtml=*/!cachedChunks.isEmpty());
@@ -512,48 +450,24 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
         }
     }
 
-    qInfo().noquote() << QStringLiteral("PERF verdict msg=%1 miss abs=%2")
-                             .arg(messageId)
-                             .arg(QDateTime::currentMSecsSinceEpoch());
     call(QStringLiteral("message_body"),
          {{QStringLiteral("id"), messageId}})
-        .then([this, conversationId, messageId, t0](QJsonValue r) {
+        .then([this, conversationId, messageId](QJsonValue r) {
             const QJsonObject o = r.toObject();
             // The core returns RAW truth; we persist it raw and sanitize
             // for display via the shared streaming pipeline.
             const QString text = o.value(QStringLiteral("text")).toString();
             const QString rawHtml = o.value(QStringLiteral("html")).toString();
-            const QJsonObject t = o.value(QStringLiteral("timings")).toObject();
-            qInfo().noquote() << QStringLiteral(
-                "PERF live msg=%1 open_to_ffi_done=%2 rust[get_message=%3 unlock_keys=%4 decrypt=%5 sanitize=%6 total=%7] raw_bytes=%8")
-                .arg(messageId)
-                .arg(QDateTime::currentMSecsSinceEpoch() - t0)
-                .arg(t.value(QStringLiteral("get_message_ms")).toInteger())
-                .arg(t.value(QStringLiteral("unlock_keys_ms")).toInteger())
-                .arg(t.value(QStringLiteral("decrypt_ms")).toInteger())
-                .arg(t.value(QStringLiteral("sanitize_ms")).toInteger())
-                .arg(t.value(QStringLiteral("total_ms")).toInteger())
-                .arg(t.value(QStringLiteral("raw_bytes")).toInteger());
             persistMessage(conversationId, messageId, o, text);
 
             // Plain first…
-            qInfo().noquote() << QStringLiteral("PERF emit-ready msg=%1 abs=%2 plain_len=%3 source=live")
-                                     .arg(messageId)
-                                     .arg(QDateTime::currentMSecsSinceEpoch())
-                                     .arg(text.size());
             emit messageBodyReady(conversationId, messageId, text,
                                   QString(), false,
                                   /*hasHtml=*/!rawHtml.isEmpty());
             // …then the sanitized HTML streams in chunks.
             if (!rawHtml.isEmpty()) {
-                const qint64 tSan = QDateTime::currentMSecsSinceEpoch();
                 const QStringList chunks =
                     ContentPipeline::sanitizeStreamed(rawHtml);
-                qInfo().noquote() << QStringLiteral("PERF sanitize-cpp msg=%1 dur=%2 html_bytes=%3 chunks=%4")
-                                         .arg(messageId)
-                                         .arg(QDateTime::currentMSecsSinceEpoch() - tSan)
-                                         .arg(rawHtml.size())
-                                         .arg(chunks.size());
                 // blocked flag rides the last chunk (we don't know it
                 // until the stream finishes). Chunks are QUEUED (see
                 // the cache-hit path) so frames render between them.
@@ -570,7 +484,7 @@ void ProtonBackend::fetchMessageBody(const QString &conversationId, const QStrin
             }
         })
         .onFailed([this, messageId](const std::exception &e) {
-            qWarning().noquote() << QStringLiteral("PERF live-fail msg=%1 err=%2")
+            qWarning().noquote() << QStringLiteral("ProtonBackend: body fetch failed for %1: %2")
                                         .arg(messageId, e.what());
             emit errorOccurred(QString::fromUtf8(e.what()));
         });
@@ -641,20 +555,13 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     if (m_shuttingDown || m_key.isEmpty() || plainBody.isEmpty())
         return;
 
-    const qint64 tPersist = QDateTime::currentMSecsSinceEpoch();
     const QJsonArray atts = apiMsg.value(QStringLiteral("attachments")).toArray();
     const QString html = apiMsg.value(QStringLiteral("html")).toString();
-    qInfo().noquote() << QStringLiteral("PERF persist-begin msg=%1 abs=%2 attachments=%3")
-                             .arg(messageId).arg(tPersist).arg(atts.size());
 
     if (atts.isEmpty()) {
         const QByteArray eml = assembleCompleteEml(
             apiMsg.value(QStringLiteral("header")).toString(), plainBody, html, {}, {});
         m_store.storeMessage(conversationId, eml, plainBody, {}, messageId);
-        qInfo().noquote() << QStringLiteral("PERF persist-end msg=%1 dur=%2 eml_bytes=%3")
-                                 .arg(messageId)
-                                 .arg(QDateTime::currentMSecsSinceEpoch() - tPersist)
-                                 .arg(eml.size());
         // The lean core has no SDK body cache to prune — ours is the
         // only copy.
         return;
@@ -676,7 +583,7 @@ void ProtonBackend::persistMessage(const QString &conversationId,
     }
 
     QtFuture::whenAll(fetches.begin(), fetches.end())
-        .then([this, conversationId, messageId, apiMsg, plainBody, html, metas, tPersist](
+        .then([this, conversationId, messageId, apiMsg, plainBody, html, metas](
                   QList<QFuture<QJsonValue>> results) {
             if (m_shuttingDown)
                 return;
@@ -691,15 +598,11 @@ void ProtonBackend::persistMessage(const QString &conversationId,
                 apiMsg.value(QStringLiteral("header")).toString(), plainBody, html,
                 metas, blobs);
             m_store.storeMessage(conversationId, eml, plainBody, metas, messageId);
-            qInfo().noquote() << QStringLiteral("PERF persist-end msg=%1 dur=%2 eml_bytes=%3 with_attachments")
-                                     .arg(messageId)
-                                     .arg(QDateTime::currentMSecsSinceEpoch() - tPersist)
-                                     .arg(eml.size());
         })
         .onFailed([this, messageId](const std::exception &e) {
             // LOUD: a persist failure means this message NEVER reaches
             // the store — every future open pays a full network fetch.
-            qWarning().noquote() << QStringLiteral("PERF persist-FAIL msg=%1 err=%2 (message will re-fetch on every open)")
+            qWarning().noquote() << QStringLiteral("ProtonBackend: persist failed for %1: %2 (message will re-fetch on every open)")
                                         .arg(messageId, e.what());
             emit errorOccurred(QString::fromUtf8(e.what()));
         });

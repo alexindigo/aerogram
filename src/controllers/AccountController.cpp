@@ -724,9 +724,6 @@ void AccountController::fetchMessages(const QString &conversationId)
 
 void AccountController::fetchMessageBody(const QString &conversationId, const QString &messageId)
 {
-    qInfo().noquote() << QStringLiteral("PERF ui-request msg=%1 abs=%2")
-                             .arg(messageId)
-                             .arg(QDateTime::currentMSecsSinceEpoch());
     QString localId;
     Account *account = accountForConversation(conversationId, &localId);
     if (auto *p = dynamic_cast<IMessageProvider *>(account ? account->backend : nullptr)) {

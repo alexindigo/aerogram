@@ -55,9 +55,6 @@ class AccountController : public QObject
     Q_PROPERTY(bool hasNoAccounts READ hasNoAccounts NOTIFY backendsChanged)
     Q_PROPERTY(bool showLockOverlay READ showLockOverlay NOTIFY lockOverlayVisibilityChanged)
     Q_PROPERTY(QString attachmentSaveStatus READ attachmentSaveStatus NOTIFY attachmentSaveStatusChanged)
-    /// Debug toggle (AEROGRAM_DEBUG_BLOCKS=1): the message pane marks
-    /// streamed-chunk boundaries inline so the block split is visible.
-    Q_PROPERTY(bool debugBlocks READ debugBlocks CONSTANT)
 
 public:
     explicit AccountController(const QList<QPair<QString, QVariantMap>> &accountSpecs,
@@ -86,7 +83,6 @@ public:
     bool hasNoAccounts() const;
     bool showLockOverlay() const;
     QString attachmentSaveStatus() const;
-    bool debugBlocks() const { return qEnvironmentVariableIsSet("AEROGRAM_DEBUG_BLOCKS"); }
 
 public slots:
     void fetchConversations();
