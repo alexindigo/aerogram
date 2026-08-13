@@ -300,6 +300,81 @@ Content Pipeline (KMime parse → shared sanitize)  →  Controller (read-throug
 
 ---
 
+## Universal Message Content Contract
+
+Message body presentations are **universal controller state**, not
+backend output. Any source (email on disk, a future chat protocol, an
+ephemeral in-memory message, an archive import) fills the same fields;
+views only project them.
+
+### Body representations
+
+Per open message, these full documents:
+
+| Field | Meaning |
+|-------|---------|
+| `raw` | verbatim source (`.eml` for email; may be empty elsewhere) |
+| `textOnly` | plain text for reading |
+| `readerHtml` | calm, structure-aware HTML subset (default email view) |
+| `sanitizedHtml` | full Qt-safe sanitize for the HTML view |
+
+For email-on-disk the **EmailStore** facade implements them
+(`readBodyViews`: one shard read + one pipeline parse yields all of
+them, plus `headers` and envelope projections). Other sources fill the
+same fields without EmailStore. **Unsanitized HTML never enters state.**
+
+### Open-message state
+
+The controller owns **one open-conversation context**; currently the
+message panel hosts a single message (N=1). The shape is a list of
+message records (`messages[]`) so multi-message threads are the same
+contract later. Account/conversation/selection change **resets** the
+whole state — no cross-account leftovers.
+
+### Renderer rules
+
+- The pane is dumb: a field is present → paint it; it changes →
+  re-paint the **full** value. There is no chunk/stream protocol in
+  QML.
+- Progressive feel ("butter") is a **controller state-update policy**,
+  never a store API family.
+- Presentation chrome (the Raw | Text | Reader | HTML pill, columns,
+  bubbles) is **view-local**; the controller doesn't know the pill
+  exists. Panels are per-type and eventually pluginable.
+
+### Headers
+
+Universal per-message bag on the open state:
+
+```text
+headers: dict[string, array<dict[string, string>>]
+```
+
+- **List** = repetition of instances (To×N, Received×N).
+- **Inner dict** = facets of one instance; multi-key when facets belong
+  together (mailbox `{display, addr}`), single-key for simple values
+  (`{value}` / `{raw}`).
+- Scalars like Subject: one list element with combined facets
+  (`{raw, text}`).
+- Email keys are RFC5322 names; chat keys are namespaced
+  (`matrix.sender`, `xmpp.type`, …).
+- Deeper structure goes in a string facet (JSON allowed).
+- Start sparse; enrichment (contacts, avatars) hydrates facets of the
+  same instance later.
+- Optional envelope projections (`fromDisplay`, `when`) keep list and
+  bubble chrome from parsing the bag.
+
+### What this forbids
+
+- Backend-provided body text/HTML driving the pane (store-only cut;
+  `messageBodyStored` + `readBodyViews` is the email path).
+- A browser engine (WebEngine/WebView) for mail HTML — Reader +
+  sanitizedHtml on Qt rich-text is the ceiling.
+- Re-introducing a size-sliced "blocks" list view as the product HTML
+  path (that experiment was abandoned).
+
+---
+
 ## Pattern A: Async RPC coordination via QFuture
 
 Backends often need to compose multiple asynchronous operations —
